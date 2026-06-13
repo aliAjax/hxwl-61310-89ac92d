@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight } from 'lucide-react';
+import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight, Database, History, Download } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -195,6 +195,215 @@ const appConfig = {
 
 const today = new Date().toISOString().slice(0, 10);
 
+const CURRENT_SCHEMA_VERSION = 1;
+const MIGRATION_STORAGE_KEY = appConfig.storage + '-migration-history';
+const SNAPSHOT_PREFIX = appConfig.storage + '-snapshot-';
+
+const MIGRATIONS = [
+  {
+    from: 0,
+    to: 1,
+    description: '将旧版数组格式迁移为版本化对象，为每条记录补充createdAt时间戳',
+    migrate(records) {
+      return records.map((item) => ({
+        ...item,
+        createdAt: item.createdAt || item.date || new Date().toISOString(),
+      }));
+    },
+  },
+];
+
+function detectSchemaVersion(raw) {
+  if (!raw) return -1;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && typeof parsed._schemaVersion === 'number') {
+      return parsed._schemaVersion;
+    }
+    if (Array.isArray(parsed)) return 0;
+    return -1;
+  } catch {
+    return -1;
+  }
+}
+
+function createSnapshot(records, version) {
+  const snapshotId = uid();
+  const snapshotKey = SNAPSHOT_PREFIX + 'v' + version + '-' + snapshotId;
+  const snapshotData = {
+    version,
+    records: JSON.parse(JSON.stringify(records)),
+    timestamp: new Date().toISOString(),
+    recordCount: records.length,
+  };
+  try {
+    localStorage.setItem(snapshotKey, JSON.stringify(snapshotData));
+    return { snapshotKey, snapshotId, success: true };
+  } catch (e) {
+    return { snapshotKey: null, snapshotId: null, success: false, error: e.message };
+  }
+}
+
+function loadSnapshot(snapshotKey) {
+  try {
+    const raw = localStorage.getItem(snapshotKey);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function deleteSnapshot(snapshotKey) {
+  try {
+    localStorage.removeItem(snapshotKey);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function listSnapshots() {
+  const snapshots = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(SNAPSHOT_PREFIX)) {
+      try {
+        const data = JSON.parse(localStorage.getItem(key));
+        snapshots.push({ key, ...data });
+      } catch {}
+    }
+  }
+  return snapshots.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+}
+
+function loadMigrationHistory() {
+  try {
+    const raw = localStorage.getItem(MIGRATION_STORAGE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
+}
+
+function saveMigrationHistory(history) {
+  localStorage.setItem(MIGRATION_STORAGE_KEY, JSON.stringify(history));
+}
+
+function addMigrationRecord(record) {
+  const history = loadMigrationHistory();
+  history.unshift({ id: uid(), ...record });
+  saveMigrationHistory(history);
+  return history;
+}
+
+function runMigrations(records, fromVersion, toVersion) {
+  let current = records;
+  let currentVersion = fromVersion;
+  const steps = [];
+  while (currentVersion < toVersion) {
+    const migration = MIGRATIONS.find((m) => m.from === currentVersion);
+    if (!migration) {
+      steps.push({ from: currentVersion, to: currentVersion + 1, status: 'failed', error: '未找到迁移脚本' });
+      return { records: current, success: false, steps };
+    }
+    try {
+      const snapshotResult = createSnapshot(current, currentVersion);
+      const prev = JSON.parse(JSON.stringify(current));
+      current = migration.migrate(current);
+      steps.push({
+        from: migration.from,
+        to: migration.to,
+        description: migration.description,
+        status: 'success',
+        snapshotKey: snapshotResult.snapshotKey,
+        prevCount: prev.length,
+        newCount: current.length,
+      });
+      currentVersion = migration.to;
+    } catch (e) {
+      steps.push({ from: currentVersion, to: currentVersion + 1, status: 'failed', error: e.message });
+      return { records: current, success: false, steps };
+    }
+  }
+  return { records: current, success: true, steps };
+}
+
+function performRollback(snapshotKey) {
+  const snapshot = loadSnapshot(snapshotKey);
+  if (!snapshot) return { success: false, error: '快照不存在或已损坏' };
+  const versionedData = {
+    _schemaVersion: snapshot.version,
+    records: snapshot.records,
+  };
+  try {
+    localStorage.setItem(appConfig.storage, JSON.stringify(versionedData));
+    return { success: true, records: snapshot.records, version: snapshot.version };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
+
+function analyzeBackupImport(backupText, currentRecords) {
+  if (!backupText || !backupText.trim()) {
+    return { hasData: false };
+  }
+  let backupData;
+  try {
+    backupData = JSON.parse(backupText);
+  } catch {
+    return { hasData: true, parseError: true, errorDetail: '无法解析为有效JSON' };
+  }
+  let backupRecords;
+  let backupSchemaVersion = 0;
+  if (Array.isArray(backupData)) {
+    backupRecords = backupData;
+    backupSchemaVersion = 0;
+  } else if (backupData && typeof backupData === 'object' && Array.isArray(backupData.records)) {
+    backupRecords = backupData.records;
+    backupSchemaVersion = backupData._schemaVersion || 0;
+  } else {
+    return { hasData: true, parseError: true, errorDetail: '数据格式不兼容：既不是数组也不是版本化对象' };
+  }
+  const backupFields = new Set();
+  const backupFieldSample = {};
+  backupRecords.slice(0, 20).forEach((r) => {
+    Object.keys(r).forEach((k) => {
+      if (k !== 'id' && k !== 'timeline' && !k.startsWith('_')) {
+        backupFields.add(k);
+        if (!backupFieldSample[k]) backupFieldSample[k] = r[k];
+      }
+    });
+  });
+  const currentFieldSet = new Set(ALL_FIELDS);
+  const extraFields = [...backupFields].filter((f) => !currentFieldSet.has(f));
+  const missingFields = [...currentFieldSet].filter((f) => !backupFields.has(f));
+  const commonFields = [...backupFields].filter((f) => currentFieldSet.has(f));
+  const currentIds = new Set(currentRecords.map((r) => r.id));
+  const overlappingIds = backupRecords.filter((r) => r.id && currentIds.has(r.id));
+  const currentCaseEvidence = new Set(currentRecords.map((r) => `${r.caseName}||${r.evidence}`));
+  const overlappingContent = backupRecords.filter((r) => currentCaseEvidence.has(`${r.caseName}||${r.evidence}`));
+  const backupCounts = {
+    total: backupRecords.length,
+    withId: backupRecords.filter((r) => r.id).length,
+    withoutId: backupRecords.filter((r) => !r.id).length,
+    withTimeline: backupRecords.filter((r) => r.timeline && Array.isArray(r.timeline)).length,
+  };
+  const overwriteRisk = overlappingIds.length > 0 || overlappingContent.length > 0;
+  const riskLevel = overlappingIds.length > 0 ? 'high' : overlappingContent.length > 0 ? 'medium' : 'low';
+  return {
+    hasData: true,
+    parseError: false,
+    backupSchemaVersion,
+    backupRecords,
+    fieldComparison: { extraFields, missingFields, commonFields },
+    conflictAnalysis: { overlappingIds: overlappingIds.length, overlappingContent: overlappingContent.length, overwriteRisk, riskLevel },
+    backupCounts,
+    currentCount: currentRecords.length,
+  };
+}
+
 function uid() {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -218,15 +427,72 @@ function loadRecords() {
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
-        return withIds(appConfig.seed);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && typeof parsed._schemaVersion === 'number') {
+        const records = Array.isArray(parsed.records) ? parsed.records : [];
+        if (parsed._schemaVersion < CURRENT_SCHEMA_VERSION) {
+          const result = runMigrations(records, parsed._schemaVersion, CURRENT_SCHEMA_VERSION);
+          if (result.success) {
+            const migrated = result.records;
+            addMigrationRecord({
+              fromVersion: parsed._schemaVersion,
+              toVersion: CURRENT_SCHEMA_VERSION,
+              timestamp: new Date().toISOString(),
+              status: 'success',
+              steps: result.steps,
+              recordCount: migrated.length,
+            });
+            const versionedData = { _schemaVersion: CURRENT_SCHEMA_VERSION, records: migrated };
+            localStorage.setItem(appConfig.storage, JSON.stringify(versionedData));
+            return ensureRecordIntegrity(migrated);
+          } else {
+            addMigrationRecord({
+              fromVersion: parsed._schemaVersion,
+              toVersion: CURRENT_SCHEMA_VERSION,
+              timestamp: new Date().toISOString(),
+              status: 'failed',
+              steps: result.steps,
+            });
+            return ensureRecordIntegrity(records);
+          }
+        }
+        return ensureRecordIntegrity(records);
       }
-      return ensureRecordIntegrity(parsed);
+      if (Array.isArray(parsed)) {
+        const result = runMigrations(parsed, 0, CURRENT_SCHEMA_VERSION);
+        let migrated;
+        if (result.success) {
+          migrated = result.records;
+          addMigrationRecord({
+            fromVersion: 0,
+            toVersion: CURRENT_SCHEMA_VERSION,
+            timestamp: new Date().toISOString(),
+            status: 'success',
+            steps: result.steps,
+            recordCount: migrated.length,
+          });
+        } else {
+          addMigrationRecord({
+            fromVersion: 0,
+            toVersion: CURRENT_SCHEMA_VERSION,
+            timestamp: new Date().toISOString(),
+            status: 'failed',
+            steps: result.steps,
+          });
+          migrated = parsed;
+        }
+        const versionedData = { _schemaVersion: CURRENT_SCHEMA_VERSION, records: migrated };
+        localStorage.setItem(appConfig.storage, JSON.stringify(versionedData));
+        return ensureRecordIntegrity(migrated);
+      }
+      return withIds(appConfig.seed);
     } catch {
       return withIds(appConfig.seed);
     }
   }
-  return withIds(appConfig.seed);
+  const seedRecords = withIds(appConfig.seed);
+  const versionedData = { _schemaVersion: CURRENT_SCHEMA_VERSION, records: seedRecords };
+  localStorage.setItem(appConfig.storage, JSON.stringify(versionedData));
+  return seedRecords;
 }
 
 function loadTemplates() {
@@ -526,6 +792,11 @@ const FIELD_ALIASES = {
 const REQUIRED_FIELDS = ['caseName', 'evidence'];
 const ALL_FIELDS = ['caseName', 'evidence', 'source', 'date', 'purpose', 'issue', 'level', 'status'];
 
+const SCHEMA_VERSIONS = {
+  0: { label: 'v0（无版本标记）', description: '旧版数据，数组格式，无schema版本字段', fields: ALL_FIELDS },
+  1: { label: 'v1（初始版本化）', description: '引入schema版本号，数据包裹为版本化对象，增加createdAt时间戳', fields: [...ALL_FIELDS, 'createdAt'] },
+};
+
 function parseCSV(text) {
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(line => line.trim());
   if (lines.length === 0) return { headers: [], rows: [] };
@@ -708,6 +979,18 @@ function App() {
   const [editingTaskId, setEditingTaskId] = useState(null);
   const [workbenchCase, setWorkbenchCase] = useState('');
   const [workbenchTab, setWorkbenchTab] = useState('evidence');
+  const [showDataMgmt, setShowDataMgmt] = useState(false);
+  const [dataMgmtTab, setDataMgmtTab] = useState('version');
+  const [backupImportText, setBackupImportText] = useState('');
+  const [backupImportAnalysis, setBackupImportAnalysis] = useState(null);
+  const [rollbackStatus, setRollbackStatus] = useState(null);
+
+  const DATA_MGMT_TABS = [
+    { key: 'version', label: '版本信息', icon: Database },
+    { key: 'history', label: '迁移历史', icon: History },
+    { key: 'backup', label: '备份导入', icon: Download },
+    { key: 'recovery', label: '恢复', icon: RotateCcw },
+  ];
 
   const WORKBENCH_TABS = [
     { key: 'evidence', label: '证据录入', icon: ClipboardList },
@@ -772,7 +1055,7 @@ function App() {
 
   function persist(next) {
     setRecords(next);
-    localStorage.setItem(appConfig.storage, JSON.stringify(next));
+    localStorage.setItem(appConfig.storage, JSON.stringify({ _schemaVersion: CURRENT_SCHEMA_VERSION, records: next }));
   }
 
   function addRecord(event) {
@@ -1274,6 +1557,133 @@ function App() {
     return result;
   }, [displayRecords, selectedCaseName]);
 
+  function openDataMgmt() {
+    setShowDataMgmt(true);
+    setDataMgmtTab('version');
+    setBackupImportText('');
+    setBackupImportAnalysis(null);
+    setRollbackStatus(null);
+  }
+
+  function closeDataMgmt() {
+    setShowDataMgmt(false);
+    setBackupImportText('');
+    setBackupImportAnalysis(null);
+    setRollbackStatus(null);
+  }
+
+  function handleBackupTextChange(value) {
+    setBackupImportText(value);
+    setBackupImportAnalysis(analyzeBackupImport(value, records));
+  }
+
+  function handleBackupFileUpload(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target.result;
+      setBackupImportText(text);
+      setBackupImportAnalysis(analyzeBackupImport(text, records));
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  }
+
+  function confirmBackupImport() {
+    if (!backupImportAnalysis || !backupImportAnalysis.hasData || backupImportAnalysis.parseError) return;
+    const incomingRecords = backupImportAnalysis.backupRecords.map((r) => ({
+      id: r.id || uid(),
+      ...r,
+      status: r.status || appConfig.primaryStatus,
+      timeline: r.timeline && Array.isArray(r.timeline) && r.timeline.length > 0
+        ? r.timeline
+        : [{ status: r.status || appConfig.primaryStatus, at: today, by: '备份导入' }],
+      createdAt: r.createdAt || new Date().toISOString(),
+    }));
+    const snapshotResult = createSnapshot(records, CURRENT_SCHEMA_VERSION);
+    if (snapshotResult.success) {
+      addMigrationRecord({
+        fromVersion: CURRENT_SCHEMA_VERSION,
+        toVersion: CURRENT_SCHEMA_VERSION,
+        timestamp: new Date().toISOString(),
+        status: 'success',
+        description: '备份文件导入',
+        snapshotKey: snapshotResult.snapshotKey,
+        recordCount: incomingRecords.length,
+      });
+    }
+    persist([...incomingRecords, ...records]);
+    closeDataMgmt();
+  }
+
+  function confirmBackupReplace() {
+    if (!backupImportAnalysis || !backupImportAnalysis.hasData || backupImportAnalysis.parseError) return;
+    const incomingRecords = backupImportAnalysis.backupRecords.map((r) => ({
+      id: r.id || uid(),
+      ...r,
+      status: r.status || appConfig.primaryStatus,
+      timeline: r.timeline && Array.isArray(r.timeline) && r.timeline.length > 0
+        ? r.timeline
+        : [{ status: r.status || appConfig.primaryStatus, at: today, by: '备份导入替换' }],
+      createdAt: r.createdAt || new Date().toISOString(),
+    }));
+    const snapshotResult = createSnapshot(records, CURRENT_SCHEMA_VERSION);
+    if (snapshotResult.success) {
+      addMigrationRecord({
+        fromVersion: CURRENT_SCHEMA_VERSION,
+        toVersion: CURRENT_SCHEMA_VERSION,
+        timestamp: new Date().toISOString(),
+        status: 'success',
+        description: '备份文件替换导入',
+        snapshotKey: snapshotResult.snapshotKey,
+        recordCount: incomingRecords.length,
+      });
+    }
+    persist(incomingRecords);
+    closeDataMgmt();
+  }
+
+  function handleRollback(snapshotKey) {
+    const result = performRollback(snapshotKey);
+    if (result.success) {
+      const migrated = ensureRecordIntegrity(result.records);
+      if (result.version < CURRENT_SCHEMA_VERSION) {
+        const migrationResult = runMigrations(migrated, result.version, CURRENT_SCHEMA_VERSION);
+        if (migrationResult.success) {
+          const versionedData = { _schemaVersion: CURRENT_SCHEMA_VERSION, records: migrationResult.records };
+          localStorage.setItem(appConfig.storage, JSON.stringify(versionedData));
+          setRecords(ensureRecordIntegrity(migrationResult.records));
+          setRollbackStatus({ success: true, message: `已从 v${result.version} 快照恢复并自动迁移到 v${CURRENT_SCHEMA_VERSION}` });
+        } else {
+          setRecords(migrated);
+          setRollbackStatus({ success: true, message: `已从 v${result.version} 快照恢复，但自动迁移未完全成功，当前数据为 v${result.version} 格式` });
+        }
+      } else {
+        setRecords(migrated);
+        setRollbackStatus({ success: true, message: '已成功恢复数据' });
+      }
+    } else {
+      setRollbackStatus({ success: false, message: result.error });
+    }
+  }
+
+  function handleDeleteSnapshot(snapshotKey) {
+    deleteSnapshot(snapshotKey);
+    setRollbackStatus({ success: true, message: '快照已删除' });
+  }
+
+  function handleExportBackup() {
+    const backupData = { _schemaVersion: CURRENT_SCHEMA_VERSION, exportDate: new Date().toISOString(), records };
+    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `证据数据备份_${today}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   function openExport(initialConfig = {}) {
     setShowExport(true);
     setExportConfig({
@@ -1356,6 +1766,10 @@ function App() {
           <button className="export-entry-btn" type="button" onClick={openExport}>
             <FileText size={18} />
             导出证据目录
+          </button>
+          <button className="data-mgmt-entry-btn" type="button" onClick={openDataMgmt}>
+            <Database size={18} />
+            数据管理
           </button>
         </div>
       </section>
@@ -3436,6 +3850,360 @@ function App() {
               <div className="print-footer-pagination">
                 第 <span className="page-counter">1</span> 页 / 共 <span className="page-counter">1</span> 页
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDataMgmt && (
+        <div className="modal-overlay" onClick={closeDataMgmt}>
+          <div className="modal data-mgmt-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="panel-title" style={{ marginBottom: 0 }}>
+                <Database size={18} />
+                <h2>数据管理与版本控制</h2>
+              </div>
+              <button type="button" className="icon-btn" onClick={closeDataMgmt}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="data-mgmt-tabs">
+              {DATA_MGMT_TABS.map((tab) => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    className={`data-mgmt-tab ${dataMgmtTab === tab.key ? 'active' : ''}`}
+                    onClick={() => setDataMgmtTab(tab.key)}
+                  >
+                    <Icon size={16} />
+                    <span>{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="modal-body data-mgmt-body">
+              {dataMgmtTab === 'version' && (
+                <div className="dm-version-tab">
+                  <div className="dm-version-current">
+                    <div className="dm-version-badge">
+                      <Database size={20} />
+                      <div>
+                        <span>当前数据版本</span>
+                        <strong>v{CURRENT_SCHEMA_VERSION}</strong>
+                      </div>
+                    </div>
+                    <p className="dm-version-desc">{SCHEMA_VERSIONS[CURRENT_SCHEMA_VERSION]?.description}</p>
+                  </div>
+
+                  <div className="dm-version-info-grid">
+                    <div className="dm-info-card">
+                      <FileSpreadsheet size={16} />
+                      <div>
+                        <span>证据记录数</span>
+                        <strong>{records.length}</strong>
+                      </div>
+                    </div>
+                    <div className="dm-info-card">
+                      <History size={16} />
+                      <div>
+                        <span>迁移次数</span>
+                        <strong>{loadMigrationHistory().length}</strong>
+                      </div>
+                    </div>
+                    <div className="dm-info-card">
+                      <Shield size={16} />
+                      <div>
+                        <span>快照数</span>
+                        <strong>{listSnapshots().length}</strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="dm-schema-timeline">
+                    <h3 className="dm-section-title"><GitBranch size={16} /> Schema版本历程</h3>
+                    {Object.entries(SCHEMA_VERSIONS).reverse().map(([version, info]) => (
+                      <div key={version} className={`dm-schema-step ${Number(version) === CURRENT_SCHEMA_VERSION ? 'current' : ''}`}>
+                        <div className="dm-schema-dot-wrap">
+                          {Number(version) === CURRENT_SCHEMA_VERSION ? <CircleDot size={14} /> : <span className="dm-schema-dot" />}
+                        </div>
+                        <div className="dm-schema-content">
+                          <div className="dm-schema-head">
+                            <strong>{info.label}</strong>
+                            {Number(version) === CURRENT_SCHEMA_VERSION && <span className="dm-current-tag">当前</span>}
+                          </div>
+                          <p>{info.description}</p>
+                          <div className="dm-schema-fields">
+                            {info.fields.map((f) => (
+                              <span key={f} className="dm-field-chip">{f}</span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="dm-actions-row">
+                    <button type="button" className="dm-action-btn primary" onClick={handleExportBackup}>
+                      <Download size={16} /> 导出备份文件
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {dataMgmtTab === 'history' && (
+                <div className="dm-history-tab">
+                  {(() => {
+                    const history = loadMigrationHistory();
+                    return history.length > 0 ? (
+                      <div className="dm-history-list">
+                        {history.map((record) => (
+                          <div key={record.id} className={`dm-history-card ${record.status === 'failed' ? 'failed' : ''}`}>
+                            <div className="dm-history-head">
+                              <div className="dm-history-version-tag">
+                                <GitBranch size={14} />
+                                <span>v{record.fromVersion} → v{record.toVersion}</span>
+                              </div>
+                              <span className={`dm-history-status ${record.status}`}>
+                                {record.status === 'success' ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
+                                {record.status === 'success' ? '成功' : '失败'}
+                              </span>
+                            </div>
+                            <div className="dm-history-meta">
+                              <span><CalendarDays size={12} /> {record.timestamp ? new Date(record.timestamp).toLocaleString('zh-CN') : '未知时间'}</span>
+                              {record.recordCount != null && <span><FileSpreadsheet size={12} /> {record.recordCount} 条记录</span>}
+                              {record.description && <span className="dm-history-desc"><Info size={12} /> {record.description}</span>}
+                            </div>
+                            {record.steps && record.steps.length > 0 && (
+                              <div className="dm-history-steps">
+                                {record.steps.map((step, i) => (
+                                  <div key={i} className={`dm-step-item ${step.status}`}>
+                                    <span className="dm-step-arrow"><ArrowRight size={12} /></span>
+                                    <span>v{step.from} → v{step.to}</span>
+                                    <span className="dm-step-status">{step.status === 'success' ? '✓' : '✗'}</span>
+                                    {step.error && <span className="dm-step-error">{step.error}</span>}
+                                    {step.description && <span className="dm-step-desc">{step.description}</span>}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {record.snapshotKey && (
+                              <div className="dm-history-snapshot">
+                                <Database size={12} /> 快照已保存
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="dm-empty">
+                        <History size={40} />
+                        <p>暂无迁移历史记录</p>
+                        <p className="dm-empty-hint">当数据从旧版本自动升级时，迁移记录会出现在这里</p>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {dataMgmtTab === 'backup' && (
+                <div className="dm-backup-tab">
+                  <div className="dm-backup-upload">
+                    <h3 className="dm-section-title"><Download size={16} /> 导入备份文件</h3>
+                    <p className="dm-backup-hint">粘贴JSON备份内容或上传备份文件，系统将自动分析字段差异和潜在覆盖风险</p>
+                    <div className="dm-backup-input-row">
+                      <label className="dm-file-upload-btn">
+                        <Upload size={16} />
+                        <span>选择文件</span>
+                        <input type="file" accept=".json" onChange={handleBackupFileUpload} style={{ display: 'none' }} />
+                      </label>
+                    </div>
+                    <textarea
+                      className="dm-backup-textarea"
+                      value={backupImportText}
+                      onChange={(e) => handleBackupTextChange(e.target.value)}
+                      placeholder="粘贴JSON备份内容..."
+                      rows={4}
+                    />
+                  </div>
+
+                  {backupImportAnalysis && backupImportAnalysis.hasData && (
+                    backupImportAnalysis.parseError ? (
+                      <div className="dm-backup-error">
+                        <AlertCircle size={16} />
+                        <span>解析失败：{backupImportAnalysis.errorDetail}</span>
+                      </div>
+                    ) : (
+                      <div className="dm-backup-analysis">
+                        <h3 className="dm-section-title"><Eye size={16} /> 导入预检结果</h3>
+
+                        <div className="dm-analysis-stats">
+                          <div className="dm-analysis-stat">
+                            <FileSpreadsheet size={16} />
+                            <div>
+                              <span>备份记录数</span>
+                              <strong>{backupImportAnalysis.backupCounts.total}</strong>
+                            </div>
+                          </div>
+                          <div className="dm-analysis-stat">
+                            <Database size={16} />
+                            <div>
+                              <span>备份版本</span>
+                              <strong>v{backupImportAnalysis.backupSchemaVersion}</strong>
+                            </div>
+                          </div>
+                          <div className="dm-analysis-stat">
+                            <FileText size={16} />
+                            <div>
+                              <span>当前记录数</span>
+                              <strong>{backupImportAnalysis.currentCount}</strong>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="dm-field-compare">
+                          <h4>字段对比</h4>
+                          <div className="dm-field-compare-grid">
+                            <div className="dm-field-group dm-common-fields">
+                              <span className="dm-field-group-label"><CheckCircle2 size={12} /> 共有字段 ({backupImportAnalysis.fieldComparison.commonFields.length})</span>
+                              <div className="dm-field-chips">
+                                {backupImportAnalysis.fieldComparison.commonFields.map((f) => (
+                                  <span key={f} className="dm-field-chip matched">{f}</span>
+                                ))}
+                              </div>
+                            </div>
+                            {backupImportAnalysis.fieldComparison.extraFields.length > 0 && (
+                              <div className="dm-field-group dm-extra-fields">
+                                <span className="dm-field-group-label"><Plus size={12} /> 备份额外字段 ({backupImportAnalysis.fieldComparison.extraFields.length})</span>
+                                <div className="dm-field-chips">
+                                  {backupImportAnalysis.fieldComparison.extraFields.map((f) => (
+                                    <span key={f} className="dm-field-chip extra">{f}</span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            {backupImportAnalysis.fieldComparison.missingFields.length > 0 && (
+                              <div className="dm-field-group dm-missing-fields">
+                                <span className="dm-field-group-label"><AlertCircle size={12} /> 备份缺失字段 ({backupImportAnalysis.fieldComparison.missingFields.length})</span>
+                                <div className="dm-field-chips">
+                                  {backupImportAnalysis.fieldComparison.missingFields.map((f) => (
+                                    <span key={f} className="dm-field-chip missing">{f}</span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className={`dm-risk-panel ${backupImportAnalysis.conflictAnalysis.riskLevel}`}>
+                          <h4>
+                            {backupImportAnalysis.conflictAnalysis.riskLevel === 'high' && <AlertTriangle size={16} />}
+                            {backupImportAnalysis.conflictAnalysis.riskLevel === 'medium' && <AlertCircle size={16} />}
+                            {backupImportAnalysis.conflictAnalysis.riskLevel === 'low' && <CheckCircle2 size={16} />}
+                            覆盖风险评估
+                          </h4>
+                          <div className="dm-risk-details">
+                            <div className="dm-risk-item">
+                              <span>ID冲突记录数</span>
+                              <strong>{backupImportAnalysis.conflictAnalysis.overlappingIds}</strong>
+                            </div>
+                            <div className="dm-risk-item">
+                              <span>内容重复记录数（同案件+同证据名）</span>
+                              <strong>{backupImportAnalysis.conflictAnalysis.overlappingContent}</strong>
+                            </div>
+                          </div>
+                          <div className="dm-risk-level">
+                            风险等级：
+                            <span className={`dm-risk-tag ${backupImportAnalysis.conflictAnalysis.riskLevel}`}>
+                              {backupImportAnalysis.conflictAnalysis.riskLevel === 'high' ? '高风险' : backupImportAnalysis.conflictAnalysis.riskLevel === 'medium' ? '中风险' : '低风险'}
+                            </span>
+                          </div>
+                          {backupImportAnalysis.conflictAnalysis.riskLevel !== 'low' && (
+                            <p className="dm-risk-advice">
+                              {backupImportAnalysis.conflictAnalysis.riskLevel === 'high'
+                                ? '存在ID冲突，建议选择「替换全部」以避免数据混乱，或先导出当前备份再操作'
+                                : '存在内容重复，导入后将产生重复记录，建议选择「替换全部」或手动合并'}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="dm-backup-actions">
+                          <button type="button" className="dm-action-btn" onClick={confirmBackupImport}>
+                            <Plus size={16} /> 追加导入（保留当前数据）
+                          </button>
+                          <button type="button" className="dm-action-btn danger" onClick={confirmBackupReplace}>
+                            <AlertTriangle size={16} /> 替换全部（覆盖当前数据）
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  )}
+
+                  {!backupImportAnalysis && (
+                    <div className="dm-empty">
+                      <Download size={40} />
+                      <p>请粘贴或上传备份文件以开始预检</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {dataMgmtTab === 'recovery' && (
+                <div className="dm-recovery-tab">
+                  {rollbackStatus && (
+                    <div className={`dm-rollback-status ${rollbackStatus.success ? 'success' : 'failed'}`}>
+                      {rollbackStatus.success ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+                      <span>{rollbackStatus.message}</span>
+                      <button type="button" onClick={() => setRollbackStatus(null)}><X size={14} /></button>
+                    </div>
+                  )}
+
+                  <h3 className="dm-section-title"><RotateCcw size={16} /> 可用快照</h3>
+                  <p className="dm-recovery-hint">每次迁移前会自动创建数据快照，可从任意快照恢复数据</p>
+                  {(() => {
+                    const snapshots = listSnapshots();
+                    return snapshots.length > 0 ? (
+                      <div className="dm-snapshot-list">
+                        {snapshots.map((snap) => (
+                          <div key={snap.key} className="dm-snapshot-card">
+                            <div className="dm-snapshot-head">
+                              <div className="dm-snapshot-version">
+                                <Database size={14} />
+                                <strong>v{snap.version}</strong>
+                              </div>
+                              <span className="dm-snapshot-count">{snap.recordCount} 条记录</span>
+                            </div>
+                            <div className="dm-snapshot-meta">
+                              <span><CalendarDays size={12} /> {snap.timestamp ? new Date(snap.timestamp).toLocaleString('zh-CN') : '未知时间'}</span>
+                            </div>
+                            <div className="dm-snapshot-actions">
+                              <button type="button" className="dm-action-btn primary" onClick={() => handleRollback(snap.key)}>
+                                <RotateCcw size={14} /> 恢复到此版本
+                              </button>
+                              <button type="button" className="dm-action-btn ghost" onClick={() => handleDeleteSnapshot(snap.key)}>
+                                <Trash2 size={14} /> 删除快照
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="dm-empty">
+                        <Database size={40} />
+                        <p>暂无可用快照</p>
+                        <p className="dm-empty-hint">迁移操作会自动创建快照，可从快照恢复到之前的版本</p>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer">
+              <button type="button" className="ghost-btn" onClick={closeDataMgmt}>关闭</button>
             </div>
           </div>
         </div>
