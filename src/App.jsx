@@ -995,6 +995,8 @@ function App() {
   const [dataMgmtTab, setDataMgmtTab] = useState('version');
   const [backupImportText, setBackupImportText] = useState('');
   const [backupImportAnalysis, setBackupImportAnalysis] = useState(null);
+  const [showEvidencePicker, setShowEvidencePicker] = useState(false);
+  const [evidencePickerSearch, setEvidencePickerSearch] = useState('');
   const [rollbackStatus, setRollbackStatus] = useState(null);
 
   const DATA_MGMT_TABS = [
@@ -1972,6 +1974,7 @@ function App() {
                       </div>
                       <div className="wb-form-actions">
                         <button className="primary" type="submit"><Plus size={16} />录入证据</button>
+                        <button type="button" className="secondary" onClick={() => { setShowEvidencePicker(true); setEvidencePickerSearch(''); }} disabled={!workbenchCase || wbRecords.length === 0}><ClipboardList size={16} />从已有证据带入</button>
                         <button type="button" className="secondary" onClick={openImport}><Upload size={16} />批量导入CSV</button>
                       </div>
                     </form>
@@ -4232,6 +4235,91 @@ function App() {
 
             <div className="modal-footer">
               <button type="button" className="ghost-btn" onClick={closeDataMgmt}>关闭</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showEvidencePicker && workbenchCase && (
+        <div className="modal-overlay" onClick={() => setShowEvidencePicker(false)}>
+          <div className="modal evidence-picker-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="panel-title" style={{ marginBottom: 0 }}>
+                <ClipboardList size={18} />
+                <h2>从已有证据带入</h2>
+                <span className="evidence-picker-case-tag">{workbenchCase}</span>
+              </div>
+              <button type="button" className="icon-btn" onClick={() => setShowEvidencePicker(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body evidence-picker-body">
+              <p className="evidence-picker-hint">
+                <Info size={14} /> 选择一条已有证据后将复用案件、来源、争议点、保密等级等字段，证据材料和证明目的需手动填写。
+              </p>
+              <div className="evidence-picker-search">
+                <Search size={16} />
+                <input
+                  value={evidencePickerSearch}
+                  onChange={(e) => setEvidencePickerSearch(e.target.value)}
+                  placeholder="搜索证据名称、来源、争议点"
+                  autoFocus
+                />
+              </div>
+              <div className="evidence-picker-list">
+                {wbRecords
+                  .filter((item) => {
+                    if (!evidencePickerSearch) return true;
+                    const q = evidencePickerSearch.toLowerCase();
+                    return `${item.evidence}${item.source}${item.issue}`.toLowerCase().includes(q);
+                  })
+                  .map((item) => (
+                    <div
+                      key={item.id}
+                      className="evidence-picker-item"
+                      onClick={() => {
+                        setForm({
+                          ...appConfig.defaultValues,
+                          caseName: workbenchCase,
+                          source: item.source || '',
+                          issue: item.issue || '',
+                          level: item.level || '',
+                          evidence: '',
+                          purpose: '',
+                          date: '',
+                        });
+                        setShowEvidencePicker(false);
+                        setEvidencePickerSearch('');
+                      }}
+                    >
+                      <div className="evidence-picker-item-head">
+                        <h4>{item.evidence}</h4>
+                        <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                      </div>
+                      <div className="evidence-picker-item-meta">
+                        <span><Briefcase size={12} />来源：{item.source || '未标注'}</span>
+                        <span><Target size={12} />争议点：{item.issue || '未关联'}</span>
+                        <span><Shield size={12} />密级：{item.level || '内部'}</span>
+                      </div>
+                      <p className="evidence-picker-item-purpose">{item.purpose || '无证明目的'}</p>
+                    </div>
+                  ))}
+                {wbRecords.filter((item) => {
+                  if (!evidencePickerSearch) return true;
+                  const q = evidencePickerSearch.toLowerCase();
+                  return `${item.evidence}${item.source}${item.issue}`.toLowerCase().includes(q);
+                }).length === 0 && (
+                  <div className="wb-empty-hint">
+                    <Search size={32} />
+                    <p>{evidencePickerSearch ? '未找到匹配的证据记录' : '当前案件暂无证据记录'}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button type="button" className="ghost-btn" onClick={() => setShowEvidencePicker(false)}>取消</button>
             </div>
           </div>
         </div>
