@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck } from 'lucide-react';
+import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -479,6 +479,13 @@ function App() {
   const [selectedCaseName, setSelectedCaseName] = useState('');
   const [customTemplates, setCustomTemplates] = useState(loadTemplates);
   const [showTemplatePanel, setShowTemplatePanel] = useState(false);
+  const [showExport, setShowExport] = useState(false);
+  const [exportConfig, setExportConfig] = useState({
+    caseName: '',
+    hideConfidential: false,
+    groupByIssue: true,
+  });
+  const [showPrintPreview, setShowPrintPreview] = useState(false);
 
   function persist(next) {
     setRecords(next);
@@ -696,6 +703,71 @@ function App() {
     };
   }, [records, selectedCaseName]);
 
+  function openExport() {
+    setShowExport(true);
+    setExportConfig({
+      caseName: '',
+      hideConfidential: false,
+      groupByIssue: true,
+    });
+    setShowPrintPreview(false);
+  }
+
+  function closeExport() {
+    setShowExport(false);
+    setShowPrintPreview(false);
+  }
+
+  const exportData = useMemo(() => {
+    let data = [...records];
+
+    if (exportConfig.caseName) {
+      data = data.filter((item) => item.caseName === exportConfig.caseName);
+    }
+
+    if (exportConfig.hideConfidential) {
+      data = data.filter((item) => item.level !== '机密');
+    }
+
+    return data;
+  }, [records, exportConfig]);
+
+  const groupedExportData = useMemo(() => {
+    if (!exportConfig.groupByIssue) {
+      return { '全部证据': exportData };
+    }
+
+    const byCase = {};
+    exportData.forEach((item) => {
+      const caseKey = item.caseName || '未分类案件';
+      if (!byCase[caseKey]) {
+        byCase[caseKey] = {};
+      }
+      const issueKey = item.issue || '未分类争议点';
+      if (!byCase[caseKey][issueKey]) {
+        byCase[caseKey][issueKey] = [];
+      }
+      byCase[caseKey][issueKey].push(item);
+    });
+
+    return byCase;
+  }, [exportData, exportConfig.groupByIssue]);
+
+  const exportStats = useMemo(() => {
+    const total = exportData.length;
+    const cases = new Set(exportData.map((item) => item.caseName)).size;
+    const issues = new Set(exportData.map((item) => item.issue)).size;
+    const confidentialCount = exportData.filter((item) => item.level === '机密').length;
+    return { total, cases, issues, confidentialCount };
+  }, [exportData]);
+
+  function handlePrint() {
+    setShowPrintPreview(true);
+    setTimeout(() => {
+      window.print();
+    }, 200);
+  }
+
   return (
     <main className="shell" style={{ '--accent': appConfig.accent }}>
       <section className="hero">
@@ -704,9 +776,15 @@ function App() {
           <h1>{appConfig.title}</h1>
           <p>{appConfig.subtitle}</p>
         </div>
-        <div className="port-card">
-          <span>Local Port</span>
-          <strong>{appConfig.port}</strong>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div className="port-card">
+            <span>Local Port</span>
+            <strong>{appConfig.port}</strong>
+          </div>
+          <button className="export-entry-btn" type="button" onClick={openExport}>
+            <FileText size={18} />
+            导出证据目录
+          </button>
         </div>
       </section>
 
@@ -1237,6 +1315,325 @@ function App() {
                 <Check size={18} />
                 确认导入 {importResult?.validRows.length > 0 ? `(${importResult.validRows.length}条)` : ''}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showExport && !showPrintPreview && (
+        <div className="modal-overlay" onClick={closeExport}>
+          <div className="modal export-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="panel-title" style={{ marginBottom: 0 }}>
+                <FileText size={18} />
+                <h2>导出证据目录</h2>
+              </div>
+              <button type="button" className="icon-btn" onClick={closeExport}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body">
+              <div className="export-config-section">
+                <h3 className="section-title">
+                  <Eye size={16} /> 导出设置
+                </h3>
+                <div className="export-config-grid">
+                  <label>
+                    <span>选择案件（可选）</span>
+                    <div className="export-select-wrap">
+                      <Briefcase size={16} />
+                      <select
+                        value={exportConfig.caseName}
+                        onChange={(e) => setExportConfig({ ...exportConfig, caseName: e.target.value })}
+                      >
+                        <option value="">全部案件</option>
+                        {caseNames.map((name) => (
+                          <option key={name} value={name}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </label>
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={exportConfig.hideConfidential}
+                      onChange={(e) => setExportConfig({ ...exportConfig, hideConfidential: e.target.checked })}
+                    />
+                    <span>隐藏「机密」材料</span>
+                  </label>
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={exportConfig.groupByIssue}
+                      onChange={(e) => setExportConfig({ ...exportConfig, groupByIssue: e.target.checked })}
+                    />
+                    <span>按案件和争议点分组</span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="export-summary-section">
+                <h3 className="section-title">
+                  <BarChart3 size={16} /> 预览统计
+                </h3>
+                <div className="export-summary">
+                  <div className="summary-stat">
+                    <div className="summary-icon info"><FileSpreadsheet size={16} /></div>
+                    <div>
+                      <span>证据总数</span>
+                      <strong>{exportStats.total}</strong>
+                    </div>
+                  </div>
+                  <div className="summary-stat">
+                    <div className="summary-icon ok"><Briefcase size={16} /></div>
+                    <div>
+                      <span>涉及案件</span>
+                      <strong>{exportStats.cases}</strong>
+                    </div>
+                  </div>
+                  <div className="summary-stat">
+                    <div className="summary-icon info"><Target size={16} /></div>
+                    <div>
+                      <span>争议点数</span>
+                      <strong>{exportStats.issues}</strong>
+                    </div>
+                  </div>
+                  <div className="summary-stat warning">
+                    <div className="summary-icon warn"><Shield size={16} /></div>
+                    <div>
+                      <span>机密材料</span>
+                      <strong>{exportStats.confidentialCount}</strong>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="export-preview-section">
+                <h3 className="section-title">
+                  <Eye size={16} /> 内容预览
+                </h3>
+                {exportData.length > 0 ? (
+                  <div className="export-preview-wrap">
+                    <table className="export-preview-table">
+                      <thead>
+                        <tr>
+                          <th style={{ width: 50 }}>序号</th>
+                          <th>证据名称</th>
+                          <th>来源</th>
+                          <th>取得日期</th>
+                          <th>证明目的</th>
+                          <th>核对状态</th>
+                          <th>保密等级</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {exportData.slice(0, 20).map((item, idx) => (
+                          <tr key={item.id}>
+                            <td className="row-num">{idx + 1}</td>
+                            <td className="ev-name">{item.evidence}</td>
+                            <td>{item.source || '-'}</td>
+                            <td>{item.date || '-'}</td>
+                            <td className="ev-purpose">{item.purpose || '-'}</td>
+                            <td>
+                              <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                            </td>
+                            <td>
+                              <span className={'level-tag level-' + (item.level || '内部')}>
+                                {item.level || '内部'}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {exportData.length > 20 && (
+                      <p className="hint" style={{ marginTop: 10 }}>
+                        ...还有 {exportData.length - 20} 条记录未显示，完整内容请在打印预览中查看
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="empty-preview">
+                    <FileSpreadsheet size={40} />
+                    <p>当前筛选条件下没有可导出的证据记录</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button type="button" className="ghost-btn" onClick={closeExport}>取消</button>
+              <button
+                type="button"
+                className="primary"
+                disabled={exportData.length === 0}
+                onClick={handlePrint}
+              >
+                <Printer size={18} />
+                生成并打印
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showPrintPreview && (
+        <div className="print-preview-root">
+          <div className="print-toolbar no-print">
+            <button type="button" className="ghost-btn" onClick={() => setShowPrintPreview(false)}>
+              <X size={16} /> 返回
+            </button>
+            <div className="print-toolbar-title">
+              <FileText size={18} />
+              证据目录打印预览
+            </div>
+            <button type="button" className="primary print-btn" onClick={() => window.print()}>
+              <Printer size={18} />
+              立即打印
+            </button>
+          </div>
+
+          <div className="print-page">
+            <div className="print-header">
+              <div className="print-header-main">
+                <Scale size={36} className="print-logo" />
+                <div>
+                  <h1 className="print-title">证据目录清单</h1>
+                  <p className="print-subtitle">
+                    {exportConfig.caseName ? `案件：${exportConfig.caseName}` : '全部案件证据汇总'}
+                  </p>
+                </div>
+              </div>
+              <div className="print-meta">
+                <div className="print-meta-row">
+                  <span>生成日期：</span>
+                  <strong>{today}</strong>
+                </div>
+                <div className="print-meta-row">
+                  <span>证据总数：</span>
+                  <strong>{exportStats.total} 份</strong>
+                </div>
+                {exportConfig.hideConfidential && (
+                  <div className="print-meta-row">
+                    <span>备注：</span>
+                    <strong style={{ color: '#dc2626' }}>已排除机密材料</strong>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {exportConfig.groupByIssue ? (
+              Object.entries(groupedExportData).map(([caseName, issues]) => (
+                <section key={caseName} className="print-case-section">
+                  <div className="print-case-title">
+                    <Briefcase size={18} />
+                    <h2>{caseName}</h2>
+                    <span className="print-case-count">
+                      共 {Object.values(issues).flat().length} 份证据
+                    </span>
+                  </div>
+
+                  {Object.entries(issues).map(([issueName, items]) => (
+                    <div key={issueName} className="print-issue-section">
+                      <div className="print-issue-title">
+                        <Target size={16} />
+                        <h3>{issueName}</h3>
+                        <span>{items.length} 份</span>
+                      </div>
+                      <table className="print-table">
+                        <thead>
+                          <tr>
+                            <th style={{ width: '6%' }}>序号</th>
+                            <th style={{ width: '18%' }}>证据名称</th>
+                            <th style={{ width: '12%' }}>来源</th>
+                            <th style={{ width: '12%' }}>取得日期</th>
+                            <th style={{ width: '32%' }}>证明目的</th>
+                            <th style={{ width: '10%' }}>核对状态</th>
+                            <th style={{ width: '10%' }}>保密等级</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {items.map((item, idx) => (
+                            <tr key={item.id}>
+                              <td className="pt-num">{idx + 1}</td>
+                              <td className="pt-name">{item.evidence}</td>
+                              <td>{item.source || '-'}</td>
+                              <td>{item.date || '-'}</td>
+                              <td className="pt-purpose">{item.purpose || '-'}</td>
+                              <td>
+                                <span className={'pt-status ps-' + (item.status || '待核对').replace(/待核对|已核对|需补强/g, (m) => ({'待核对':'a','已核对':'b','需补强':'c'}[m]))}>
+                                  {item.status || '待核对'}
+                                </span>
+                              </td>
+                              <td>
+                                <span className={'pt-level pl-' + (item.level || '内部')}>
+                                  {item.level || '内部'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ))}
+                </section>
+              ))
+            ) : (
+              <section className="print-case-section">
+                <div className="print-case-title">
+                  <FileSpreadsheet size={18} />
+                  <h2>全部证据</h2>
+                  <span className="print-case-count">共 {exportData.length} 份证据</span>
+                </div>
+                <table className="print-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '6%' }}>序号</th>
+                      <th style={{ width: '18%' }}>证据名称</th>
+                      <th style={{ width: '10%' }}>案件</th>
+                      <th style={{ width: '10%' }}>来源</th>
+                      <th style={{ width: '10%' }}>取得日期</th>
+                      <th style={{ width: '30%' }}>证明目的</th>
+                      <th style={{ width: '8%' }}>核对状态</th>
+                      <th style={{ width: '8%' }}>保密等级</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {exportData.map((item, idx) => (
+                      <tr key={item.id}>
+                        <td className="pt-num">{idx + 1}</td>
+                        <td className="pt-name">{item.evidence}</td>
+                        <td>{item.caseName}</td>
+                        <td>{item.source || '-'}</td>
+                        <td>{item.date || '-'}</td>
+                        <td className="pt-purpose">{item.purpose || '-'}</td>
+                        <td>
+                          <span className={'pt-status ps-' + (item.status || '待核对').replace(/待核对|已核对|需补强/g, (m) => ({'待核对':'a','已核对':'b','需补强':'c'}[m]))}>
+                            {item.status || '待核对'}
+                          </span>
+                        </td>
+                        <td>
+                          <span className={'pt-level pl-' + (item.level || '内部')}>
+                            {item.level || '内部'}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </section>
+            )}
+
+            <div className="print-footer">
+              <div className="print-footer-row">
+                <span>编制人：____________________</span>
+                <span>核对人：____________________</span>
+                <span>编制日期：{today}</span>
+              </div>
+              <div className="print-footer-pagination">
+                第 <span className="page-counter">1</span> 页 / 共 <span className="page-counter">1</span> 页
+              </div>
             </div>
           </div>
         </div>
