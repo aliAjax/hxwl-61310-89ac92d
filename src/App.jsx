@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3 } from 'lucide-react';
+import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -10,6 +10,7 @@ const appConfig = {
   "domain": "法律证据",
   "icon": "Scale",
   "storage": "hxwl-61310-legal-evidence",
+  "templateStorage": "hxwl-61310-purpose-templates",
   "accent": "#475569",
   "statuses": [
     "待核对",
@@ -150,6 +151,43 @@ const appConfig = {
     "issue": "付款事实",
     "level": "内部",
     "status": "待核对"
+  },
+  "purposeTemplates": {
+    "合同成立": [
+      "证明双方已就合同主要条款达成合意",
+      "证明合同已依法成立并生效",
+      "证明要约、承诺过程完整有效",
+      "证明双方均具有相应的民事行为能力",
+      "证明合同内容不违反法律强制性规定",
+      "证明合同签订系双方真实意思表示",
+      "证明合同书加盖公章/签字真实有效"
+    ],
+    "付款事实": [
+      "证明原告已按约定支付款项",
+      "证明被告已收到相应款项",
+      "证明付款金额与合同约定一致",
+      "证明付款时间符合合同约定",
+      "证明款项性质为合同项下货款/服务费",
+      "证明原告已履行付款义务"
+    ],
+    "交付瑕疵": [
+      "证明交付标的物存在质量瑕疵",
+      "证明标的物不符合合同约定的规格标准",
+      "证明交付数量与合同约定不符",
+      "证明交付时间迟延于合同约定",
+      "证明标的物存在功能性缺陷",
+      "证明瑕疵导致合同目的无法实现",
+      "证明原告已在异议期内提出质量异议"
+    ],
+    "违约损失": [
+      "证明被告存在违约行为",
+      "证明原告因违约遭受实际损失",
+      "证明损失与违约行为存在因果关系",
+      "证明违约金计算符合合同约定",
+      "证明逾期利息/资金占用损失合理",
+      "证明原告为维权支出的合理费用",
+      "证明可得利益损失的计算依据"
+    ]
   }
 };
 
@@ -173,6 +211,68 @@ function loadRecords() {
     }
   }
   return withIds(appConfig.seed);
+}
+
+function loadTemplates() {
+  const raw = localStorage.getItem(appConfig.templateStorage);
+  if (raw) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function saveTemplates(customTemplates) {
+  localStorage.setItem(appConfig.templateStorage, JSON.stringify(customTemplates));
+}
+
+function addCustomTemplate(customTemplates, issue, purpose) {
+  const next = { ...customTemplates };
+  if (!next[issue]) {
+    next[issue] = [];
+  }
+  if (!next[issue].includes(purpose)) {
+    next[issue] = [...next[issue], purpose];
+  }
+  saveTemplates(next);
+  return next;
+}
+
+function removeCustomTemplate(customTemplates, issue, purpose) {
+  const next = { ...customTemplates };
+  if (next[issue]) {
+    next[issue] = next[issue].filter((item) => item !== purpose);
+    if (next[issue].length === 0) {
+      delete next[issue];
+    }
+  }
+  saveTemplates(next);
+  return next;
+}
+
+function getAllTemplates(customTemplates) {
+  const result = {};
+  Object.keys(appConfig.purposeTemplates).forEach((issue) => {
+    result[issue] = [...appConfig.purposeTemplates[issue]];
+  });
+  Object.keys(customTemplates).forEach((issue) => {
+    if (!result[issue]) {
+      result[issue] = [];
+    }
+    customTemplates[issue].forEach((item) => {
+      if (!result[issue].includes(item)) {
+        result[issue].push(item);
+      }
+    });
+  });
+  return result;
+}
+
+function isBuiltInTemplate(issue, purpose) {
+  return appConfig.purposeTemplates[issue]?.includes(purpose) ?? false;
 }
 
 function avg(numbers) {
@@ -377,6 +477,8 @@ function App() {
   const [importText, setImportText] = useState('');
   const [importResult, setImportResult] = useState(null);
   const [selectedCaseName, setSelectedCaseName] = useState('');
+  const [customTemplates, setCustomTemplates] = useState(loadTemplates);
+  const [showTemplatePanel, setShowTemplatePanel] = useState(false);
 
   function persist(next) {
     setRecords(next);
@@ -493,6 +595,25 @@ function App() {
     }
     closeImport();
   }
+
+  function applyTemplate(purpose) {
+    setForm({ ...form, purpose });
+  }
+
+  function handleSaveTemplate() {
+    if (!form.purpose || !form.purpose.trim()) return;
+    const issue = form.issue || appConfig.defaultValues.issue;
+    const next = addCustomTemplate(customTemplates, issue, form.purpose.trim());
+    setCustomTemplates(next);
+  }
+
+  function handleRemoveTemplate(issue, purpose) {
+    const next = removeCustomTemplate(customTemplates, issue, purpose);
+    setCustomTemplates(next);
+  }
+
+  const allTemplates = useMemo(() => getAllTemplates(customTemplates), [customTemplates]);
+  const currentTemplates = allTemplates[form.issue] || [];
 
   const filteredRecords = useMemo(() => {
     return records
@@ -746,18 +867,87 @@ function App() {
           </div>
           <div className="form-grid">
             {appConfig.fields.map((field) => (
-              <label key={field.key} className={field.type === 'textarea' ? 'wide' : ''}>
-                <span>{field.label}</span>
-                {field.type === 'textarea' ? (
-                  <textarea value={form[field.key] || ''} onChange={(event) => setForm({ ...form, [field.key]: event.target.value })} placeholder={field.placeholder} />
-                ) : field.type === 'select' ? (
-                  <select value={form[field.key] || ''} onChange={(event) => setForm({ ...form, [field.key]: event.target.value })}>
-                    {field.options.map((option) => <option key={option}>{option}</option>)}
-                  </select>
-                ) : (
-                  <input type={field.type} value={form[field.key] || ''} onChange={(event) => setForm({ ...form, [field.key]: event.target.value })} placeholder={field.placeholder} />
-                )}
-              </label>
+              field.key === 'purpose' ? (
+                <label key={field.key} className="wide">
+                  <span className="field-label-row">
+                    <span>{field.label}</span>
+                    <button
+                      type="button"
+                      className="template-toggle-btn"
+                      onClick={() => setShowTemplatePanel(!showTemplatePanel)}
+                    >
+                      <Bookmark size={14} />
+                      {showTemplatePanel ? '收起模板' : '证明目的模板'}
+                      <ChevronDown size={14} className={showTemplatePanel ? 'rotate-up' : ''} />
+                    </button>
+                  </span>
+                  <textarea
+                    value={form[field.key] || ''}
+                    onChange={(event) => setForm({ ...form, [field.key]: event.target.value })}
+                    placeholder={field.placeholder}
+                  />
+                  {showTemplatePanel && (
+                    <div className="template-panel">
+                      <div className="template-panel-header">
+                        <span className="template-panel-title">
+                          <BookmarkCheck size={14} />
+                          {form.issue || '请选择争议点'} 相关模板
+                        </span>
+                        <button
+                          type="button"
+                          className="save-template-btn"
+                          onClick={handleSaveTemplate}
+                          disabled={!form.purpose || !form.purpose.trim()}
+                        >
+                          <Plus size={14} />
+                          保存当前为模板
+                        </button>
+                      </div>
+                      {currentTemplates.length > 0 ? (
+                        <div className="template-list">
+                          {currentTemplates.map((template, index) => (
+                            <div key={index} className="template-item">
+                              <button
+                                type="button"
+                                className="template-text"
+                                onClick={() => applyTemplate(template)}
+                                title="点击填入"
+                              >
+                                {template}
+                              </button>
+                              {!isBuiltInTemplate(form.issue, template) && (
+                                <button
+                                  type="button"
+                                  className="template-delete-btn"
+                                  onClick={() => handleRemoveTemplate(form.issue, template)}
+                                  title="删除模板"
+                                >
+                                  <X size={12} />
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="template-empty">暂无模板，请先选择争议点或添加自定义模板</p>
+                      )}
+                    </div>
+                  )}
+                </label>
+              ) : (
+                <label key={field.key} className={field.type === 'textarea' ? 'wide' : ''}>
+                  <span>{field.label}</span>
+                  {field.type === 'textarea' ? (
+                    <textarea value={form[field.key] || ''} onChange={(event) => setForm({ ...form, [field.key]: event.target.value })} placeholder={field.placeholder} />
+                  ) : field.type === 'select' ? (
+                    <select value={form[field.key] || ''} onChange={(event) => setForm({ ...form, [field.key]: event.target.value })}>
+                      {field.options.map((option) => <option key={option}>{option}</option>)}
+                    </select>
+                  ) : (
+                    <input type={field.type} value={form[field.key] || ''} onChange={(event) => setForm({ ...form, [field.key]: event.target.value })} placeholder={field.placeholder} />
+                  )}
+                </label>
+              )
             ))}
             <label>
               <span>当前状态</span>
