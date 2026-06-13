@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText } from 'lucide-react';
+import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -703,6 +703,37 @@ function App() {
     };
   }, [records, selectedCaseName]);
 
+  const timelineData = useMemo(() => {
+    if (!selectedCaseName) return [];
+
+    const caseRecords = filteredRecords.filter(item => item.caseName === selectedCaseName);
+    const withDate = caseRecords.filter(item => item.date);
+    const withoutDate = caseRecords.filter(item => !item.date);
+
+    const grouped = {};
+    withDate.forEach(item => {
+      const key = item.date;
+      (grouped[key] ||= []).push(item);
+    });
+
+    const sortedDates = Object.keys(grouped).sort();
+    const result = sortedDates.map(date => ({
+      date,
+      items: grouped[date],
+      isNoDate: false,
+    }));
+
+    if (withoutDate.length > 0) {
+      result.push({
+        date: '未标注日期',
+        items: withoutDate,
+        isNoDate: true,
+      });
+    }
+
+    return result;
+  }, [filteredRecords, selectedCaseName]);
+
   function openExport() {
     setShowExport(true);
     setExportConfig({
@@ -1077,6 +1108,80 @@ function App() {
             ))}
           </div>
         </section>
+      </section>
+
+      <section className="panel evidence-chain-timeline">
+        <div className="panel-title">
+          <GitBranch size={18} />
+          <h2>证据链时间线</h2>
+          <div className="timeline-case-selector">
+            <Briefcase size={16} />
+            <select value={selectedCaseName} onChange={(e) => setSelectedCaseName(e.target.value)}>
+              <option value="">请选择案件</option>
+              {caseNames.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            <ChevronDown size={16} />
+          </div>
+          {(filters.query || filters.status !== '全部') && (
+            <span className="timeline-filter-badge">
+              <Filter size={12} />
+              筛选视图
+            </span>
+          )}
+        </div>
+
+        {selectedCaseName ? (
+          timelineData.length > 0 ? (
+            <div className="timeline-track">
+              {timelineData.map((group, groupIdx) => (
+                <div key={group.date} className={`timeline-group ${group.isNoDate ? 'no-date-group' : ''}`}>
+                  <div className="timeline-date-marker">
+                    <div className="timeline-dot-wrapper">
+                      {groupIdx === 0 ? <CircleDot size={14} /> : <span className="timeline-dot" />}
+                      {groupIdx < timelineData.length - 1 && <span className="timeline-line" />}
+                    </div>
+                    <div className="timeline-date-label">
+                      <CalendarDays size={14} />
+                      <span>{group.isNoDate ? '未标注日期' : group.date}</span>
+                      <span className="timeline-count">{group.items.length} 份</span>
+                    </div>
+                  </div>
+                  <div className="timeline-items">
+                    {group.items.map((item) => (
+                      <div
+                        key={item.id}
+                        className={`timeline-node ${selected?.id === item.id ? 'active' : ''}`}
+                        onClick={() => setSelected(item)}
+                      >
+                        <div className="timeline-node-head">
+                          <span className="timeline-node-title">{item.evidence}</span>
+                          <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                        </div>
+                        <div className="timeline-node-meta">
+                          <span><Briefcase size={12} />{item.source || '未标注'}</span>
+                          <span><Target size={12} />{item.issue || '未关联'}</span>
+                        </div>
+                        <div className="timeline-node-purpose">{item.purpose || '无证明目的'}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="timeline-empty">
+              <GitBranch size={40} />
+              <p>当前筛选条件下没有匹配的证据记录</p>
+            </div>
+          )
+        ) : (
+          <div className="timeline-empty">
+            <GitBranch size={40} />
+            <p>请选择一个案件，查看该案件的证据链时间线</p>
+          </div>
+        )}
       </section>
 
       <section className="insights">
