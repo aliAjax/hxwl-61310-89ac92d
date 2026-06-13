@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info } from 'lucide-react';
+import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3 } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -376,6 +376,7 @@ function App() {
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState('');
   const [importResult, setImportResult] = useState(null);
+  const [selectedCaseName, setSelectedCaseName] = useState('');
 
   function persist(next) {
     setRecords(next);
@@ -530,6 +531,50 @@ function App() {
     }, {});
   }, [records]);
 
+  const caseNames = useMemo(() => {
+    const names = [...new Set(records.map((item) => item.caseName))];
+    return names;
+  }, [records]);
+
+  const caseOverview = useMemo(() => {
+    if (!selectedCaseName) return null;
+
+    const caseRecords = records.filter((item) => item.caseName === selectedCaseName);
+
+    const statusDistribution = appConfig.statuses.map((status) => ({
+      name: status,
+      count: caseRecords.filter((item) => item.status === status).length,
+    }));
+
+    const issueDistribution = {};
+    caseRecords.forEach((item) => {
+      const key = item.issue || '未分类';
+      issueDistribution[key] = (issueDistribution[key] || 0) + 1;
+    });
+
+    const levelDistribution = {};
+    caseRecords.forEach((item) => {
+      const key = item.level || '未设置';
+      levelDistribution[key] = (levelDistribution[key] || 0) + 1;
+    });
+
+    const recentEvidence = [...caseRecords]
+      .sort((a, b) => {
+        const aDate = a.createdAt || a.date || '';
+        const bDate = b.createdAt || b.date || '';
+        return String(bDate).localeCompare(String(aDate));
+      })
+      .slice(0, 5);
+
+    return {
+      totalCount: caseRecords.length,
+      statusDistribution,
+      issueDistribution: Object.entries(issueDistribution).map(([name, count]) => ({ name, count })),
+      levelDistribution: Object.entries(levelDistribution).map(([name, count]) => ({ name, count })),
+      recentEvidence,
+    };
+  }, [records, selectedCaseName]);
+
   return (
     <main className="shell" style={{ '--accent': appConfig.accent }}>
       <section className="hero">
@@ -551,6 +596,146 @@ function App() {
             <strong>{metric.value}</strong>
           </article>
         ))}
+      </section>
+
+      <section className="panel case-overview">
+        <div className="panel-title">
+          <BarChart3 size={18} />
+          <h2>案件总览</h2>
+          <div className="case-selector">
+            <Briefcase size={16} />
+            <select value={selectedCaseName} onChange={(e) => setSelectedCaseName(e.target.value)}>
+              <option value="">请选择案件</option>
+              {caseNames.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            <ChevronDown size={16} />
+          </div>
+        </div>
+
+        {caseOverview ? (
+          <>
+            <div className="overview-stats">
+              <div className="overview-stat-card">
+                <div className="stat-icon evidence-icon">
+                  <FileSpreadsheet size={22} />
+                </div>
+                <div>
+                  <span>证据总数</span>
+                  <strong>{caseOverview.totalCount}</strong>
+                </div>
+              </div>
+              <div className="overview-stat-card">
+                <div className="stat-icon issue-icon">
+                  <Target size={22} />
+                </div>
+                <div>
+                  <span>争议点</span>
+                  <strong>{caseOverview.issueDistribution.length}</strong>
+                </div>
+              </div>
+              <div className="overview-stat-card">
+                <div className="stat-icon level-icon">
+                  <Shield size={22} />
+                </div>
+                <div>
+                  <span>保密等级</span>
+                  <strong>{caseOverview.levelDistribution.length}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="overview-distributions">
+              <div className="distribution-card">
+                <h3>核对状态分布</h3>
+                <div className="distribution-list">
+                  {caseOverview.statusDistribution.map((item) => (
+                    <div key={item.name} className="distribution-item">
+                      <div className="dist-label">
+                        <span className={'status ' + statusClass(item.name)}>{item.name}</span>
+                        <span className="dist-count">{item.count}</span>
+                      </div>
+                      <div className="dist-bar">
+                        <div
+                          className={'dist-fill ' + statusClass(item.name)}
+                          style={{ width: `${caseOverview.totalCount ? (item.count / caseOverview.totalCount) * 100 : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="distribution-card">
+                <h3>关联争议点分布</h3>
+                <div className="distribution-list">
+                  {caseOverview.issueDistribution.map((item) => (
+                    <div key={item.name} className="distribution-item">
+                      <div className="dist-label">
+                        <span className="dist-name">{item.name}</span>
+                        <span className="dist-count">{item.count}</span>
+                      </div>
+                      <div className="dist-bar">
+                        <div
+                          className="dist-fill dist-issue"
+                          style={{ width: `${caseOverview.totalCount ? (item.count / caseOverview.totalCount) * 100 : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="distribution-card">
+                <h3>保密等级分布</h3>
+                <div className="distribution-list">
+                  {caseOverview.levelDistribution.map((item) => (
+                    <div key={item.name} className="distribution-item">
+                      <div className="dist-label">
+                        <span className="dist-name">{item.name}</span>
+                        <span className="dist-count">{item.count}</span>
+                      </div>
+                      <div className="dist-bar">
+                        <div
+                          className="dist-fill dist-level"
+                          style={{ width: `${caseOverview.totalCount ? (item.count / caseOverview.totalCount) * 100 : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="recent-evidence">
+              <h3>
+                <Clock size={16} />
+                最近录入证据
+              </h3>
+              <div className="recent-list">
+                {caseOverview.recentEvidence.map((item) => (
+                  <div key={item.id} className="recent-item" onClick={() => setSelected(item)}>
+                    <div className="recent-main">
+                      <span className="recent-title">{item.evidence}</span>
+                      <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                    </div>
+                    <div className="recent-meta">
+                      <span>{item.issue}</span>
+                      <span>·</span>
+                      <span>{item.date || item.createdAt?.slice(0, 10) || '未设置日期'}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="overview-empty">
+            <Briefcase size={40} />
+            <p>请从上方选择一个案件，查看该案件的证据统计概览</p>
+          </div>
+        )}
       </section>
 
       <section className="workspace">
