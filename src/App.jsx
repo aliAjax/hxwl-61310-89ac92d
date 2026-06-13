@@ -1274,12 +1274,13 @@ function App() {
     return result;
   }, [displayRecords, selectedCaseName]);
 
-  function openExport() {
+  function openExport(initialConfig = {}) {
     setShowExport(true);
     setExportConfig({
       caseName: '',
       hideConfidential: false,
       groupByIssue: true,
+      ...initialConfig,
     });
     setShowPrintPreview(false);
   }
@@ -1821,7 +1822,11 @@ function App() {
                     <div className="wb-empty-hint"><FileText size={32} /><p>该案件暂无可导出的证据</p></div>
                   )}
                   <div className="wb-export-actions">
-                    <button type="button" className="primary" onClick={() => { setExportConfig({ ...exportConfig, caseName: workbenchCase }); openExport(); }}>
+                    <button type="button" className="primary" onClick={() => openExport({
+                      caseName: workbenchCase,
+                      hideConfidential: exportConfig.hideConfidential,
+                      groupByIssue: exportConfig.groupByIssue,
+                    })}>
                       <Printer size={16} /> 打开完整导出预览
                     </button>
                   </div>
