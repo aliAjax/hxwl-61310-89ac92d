@@ -409,17 +409,25 @@ function uid() {
 }
 
 function withIds(items) {
-  return items.map((item) => ({ id: uid(), timeline: item.timeline || [{ status: item.status, at: today, by: '系统' }], ...item }));
+  return items.map((item) => ({ ...item, id: item.id || uid(), timeline: item.timeline || [{ status: item.status, at: today, by: '系统' }] }));
 }
 
 function ensureRecordIntegrity(items) {
-  return items.map((item) => ({
-    id: item.id || uid(),
-    timeline: item.timeline && Array.isArray(item.timeline) && item.timeline.length > 0
-      ? item.timeline
-      : [{ status: item.status || appConfig.primaryStatus, at: today, by: '系统' }],
-    ...item,
-  }));
+  const seenIds = new Set();
+  return items.map((item) => {
+    let id = item.id;
+    if (!id || seenIds.has(id)) {
+      id = uid();
+    }
+    seenIds.add(id);
+    return {
+      ...item,
+      id,
+      timeline: item.timeline && Array.isArray(item.timeline) && item.timeline.length > 0
+        ? item.timeline
+        : [{ status: item.status || appConfig.primaryStatus, at: today, by: '系统' }],
+    };
+  });
 }
 
 function loadRecords() {
@@ -458,6 +466,7 @@ function loadRecords() {
         return ensureRecordIntegrity(records);
       }
       if (Array.isArray(parsed)) {
+        const snapshotResult = createSnapshot(parsed, 0);
         const result = runMigrations(parsed, 0, CURRENT_SCHEMA_VERSION);
         let migrated;
         if (result.success) {
@@ -469,7 +478,10 @@ function loadRecords() {
             status: 'success',
             steps: result.steps,
             recordCount: migrated.length,
+            snapshotKey: snapshotResult.snapshotKey,
           });
+          const versionedData = { _schemaVersion: CURRENT_SCHEMA_VERSION, records: migrated };
+          localStorage.setItem(appConfig.storage, JSON.stringify(versionedData));
         } else {
           addMigrationRecord({
             fromVersion: 0,
@@ -477,11 +489,11 @@ function loadRecords() {
             timestamp: new Date().toISOString(),
             status: 'failed',
             steps: result.steps,
+            snapshotKey: snapshotResult.success ? snapshotResult.snapshotKey : null,
+            error: result.steps.find((s) => s.status === 'failed')?.error,
           });
           migrated = parsed;
         }
-        const versionedData = { _schemaVersion: CURRENT_SCHEMA_VERSION, records: migrated };
-        localStorage.setItem(appConfig.storage, JSON.stringify(versionedData));
         return ensureRecordIntegrity(migrated);
       }
       return withIds(appConfig.seed);
@@ -1592,15 +1604,23 @@ function App() {
 
   function confirmBackupImport() {
     if (!backupImportAnalysis || !backupImportAnalysis.hasData || backupImportAnalysis.parseError) return;
-    const incomingRecords = backupImportAnalysis.backupRecords.map((r) => ({
-      id: r.id || uid(),
-      ...r,
-      status: r.status || appConfig.primaryStatus,
-      timeline: r.timeline && Array.isArray(r.timeline) && r.timeline.length > 0
-        ? r.timeline
-        : [{ status: r.status || appConfig.primaryStatus, at: today, by: '备份导入' }],
-      createdAt: r.createdAt || new Date().toISOString(),
-    }));
+    const currentIds = new Set(records.map((r) => r.id));
+    const incomingRecords = backupImportAnalysis.backupRecords.map((r) => {
+      let id = r.id;
+      if (!id || currentIds.has(id)) {
+        id = uid();
+      }
+      currentIds.add(id);
+      return {
+        ...r,
+        id,
+        status: r.status || appConfig.primaryStatus,
+        timeline: r.timeline && Array.isArray(r.timeline) && r.timeline.length > 0
+          ? r.timeline
+          : [{ status: r.status || appConfig.primaryStatus, at: today, by: '备份导入' }],
+        createdAt: r.createdAt || new Date().toISOString(),
+      };
+    });
     const snapshotResult = createSnapshot(records, CURRENT_SCHEMA_VERSION);
     if (snapshotResult.success) {
       addMigrationRecord({
@@ -1619,15 +1639,23 @@ function App() {
 
   function confirmBackupReplace() {
     if (!backupImportAnalysis || !backupImportAnalysis.hasData || backupImportAnalysis.parseError) return;
-    const incomingRecords = backupImportAnalysis.backupRecords.map((r) => ({
-      id: r.id || uid(),
-      ...r,
-      status: r.status || appConfig.primaryStatus,
-      timeline: r.timeline && Array.isArray(r.timeline) && r.timeline.length > 0
-        ? r.timeline
-        : [{ status: r.status || appConfig.primaryStatus, at: today, by: '备份导入替换' }],
-      createdAt: r.createdAt || new Date().toISOString(),
-    }));
+    const seenIds = new Set();
+    const incomingRecords = backupImportAnalysis.backupRecords.map((r) => {
+      let id = r.id;
+      if (!id || seenIds.has(id)) {
+        id = uid();
+      }
+      seenIds.add(id);
+      return {
+        ...r,
+        id,
+        status: r.status || appConfig.primaryStatus,
+        timeline: r.timeline && Array.isArray(r.timeline) && r.timeline.length > 0
+          ? r.timeline
+          : [{ status: r.status || appConfig.primaryStatus, at: today, by: '备份导入替换' }],
+        createdAt: r.createdAt || new Date().toISOString(),
+      };
+    });
     const snapshotResult = createSnapshot(records, CURRENT_SCHEMA_VERSION);
     if (snapshotResult.success) {
       addMigrationRecord({
