@@ -731,7 +731,10 @@ function App() {
     return records
       .filter((item) => !filters.query || `${item.caseName}${item.evidence}${item.issue}`.includes(filters.query))
       .filter((item) => filters.status === '全部' || item.status === filters.status)
-      .filter((item) => !selectedIssueFilter || item.issue === selectedIssueFilter)
+      .filter((item) => !selectedIssueFilter || (
+        item.issue === selectedIssueFilter
+        && (!selectedCaseName || item.caseName === selectedCaseName)
+      ))
       .sort((a, b) => {
         if (appConfig.sort === 'priority') {
           const rank = priorityRank(a.priority) - priorityRank(b.priority);
@@ -741,7 +744,7 @@ function App() {
         const bDate = b[appConfig.dateKey] || b.sentAt || b.createdAt || '';
         return String(aDate).localeCompare(String(bDate));
       });
-  }, [records, filters, selectedIssueFilter]);
+  }, [records, filters, selectedIssueFilter, selectedCaseName]);
 
   const metrics = [
     { label: "证据数", value: records.length },
