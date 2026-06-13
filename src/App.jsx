@@ -641,6 +641,11 @@ function App() {
     return applyMaskToRecord(item, mode);
   }
 
+  function getSearchableText(item, mode) {
+    const masked = applyMaskToRecord(item, mode);
+    return `${masked.caseName}${masked.evidence}${masked.issue}`;
+  }
+
   function persist(next) {
     setRecords(next);
     localStorage.setItem(appConfig.storage, JSON.stringify(next));
@@ -778,7 +783,7 @@ function App() {
 
   const filteredRecords = useMemo(() => {
     return records
-      .filter((item) => !filters.query || `${item.caseName}${item.evidence}${item.issue}`.includes(filters.query))
+      .filter((item) => !filters.query || getSearchableText(item, viewMode).includes(filters.query))
       .filter((item) => filters.status === '全部' || item.status === filters.status)
       .filter((item) => !selectedIssueFilter || (
         item.issue === selectedIssueFilter
@@ -793,7 +798,7 @@ function App() {
         const bDate = b[appConfig.dateKey] || b.sentAt || b.createdAt || '';
         return String(aDate).localeCompare(String(bDate));
       });
-  }, [records, filters, selectedIssueFilter, selectedCaseName]);
+  }, [records, filters, selectedIssueFilter, selectedCaseName, viewMode]);
 
   const displayRecords = useMemo(() => getProcessedRecords(filteredRecords, viewMode), [filteredRecords, viewMode]);
   const displaySelected = useMemo(() => processSingleRecord(selected, viewMode), [selected, viewMode]);
