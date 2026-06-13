@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays } from 'lucide-react';
+import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -217,11 +217,165 @@ function statusClass(status) {
   return ['status-a', 'status-b', 'status-c', 'status-d'][index] || 'status-a';
 }
 
+const FIELD_ALIASES = {
+  caseName: ['案件', '案件名称', '案件名', '案例名称', '案例', 'case', 'caseName', 'case_name'],
+  evidence: ['证据材料', '证据', '证据名称', '材料名称', '材料', 'evidence', 'material'],
+  source: ['来源', '证据来源', '材料来源', '获取来源', 'source', 'from'],
+  date: ['取得日期', '日期', '获取日期', '取得时间', '采集日期', 'date', 'acquireDate'],
+  purpose: ['证明目的', '证明内容', '证明事项', '说明', 'purpose', 'prove'],
+  issue: ['关联争议点', '争议点', '焦点', '关联焦点', '争议焦点', 'issue', 'dispute'],
+  level: ['保密等级', '密级', '保密级别', '等级', 'level', 'secrecy', 'classification'],
+  status: ['当前状态', '状态', '核对状态', 'status', 'state']
+};
+
+const REQUIRED_FIELDS = ['caseName', 'evidence'];
+const ALL_FIELDS = ['caseName', 'evidence', 'source', 'date', 'purpose', 'issue', 'level', 'status'];
+
+function parseCSV(text) {
+  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(line => line.trim());
+  if (lines.length === 0) return { headers: [], rows: [] };
+
+  const parseLine = (line) => {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        result.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    result.push(current.trim());
+    return result;
+  };
+
+  const headers = parseLine(lines[0]);
+  const rows = lines.slice(1).map(parseLine);
+  return { headers, rows };
+}
+
+function matchField(header) {
+  const normalized = header.trim().toLowerCase().replace(/\s+/g, '');
+  for (const [fieldKey, aliases] of Object.entries(FIELD_ALIASES)) {
+    for (const alias of aliases) {
+      if (normalized === alias.toLowerCase().replace(/\s+/g, '')) {
+        return fieldKey;
+      }
+    }
+  }
+  return null;
+}
+
+function buildImportPreview(text) {
+  if (!text.trim()) {
+    return {
+      hasData: false,
+      matchedFields: [],
+      unmatchedHeaders: [],
+      missingRequired: REQUIRED_FIELDS.map(key => ({
+        key,
+        label: appConfig.fields.find(f => f.key === key)?.label || (key === 'status' ? '当前状态' : key)
+      })),
+      validRows: [],
+      invalidRows: [],
+      rowCount: 0,
+      fieldMapping: {}
+    };
+  }
+
+  const { headers, rows } = parseCSV(text);
+  const fieldMapping = {};
+  const matchedFields = [];
+  const unmatchedHeaders = [];
+
+  headers.forEach((header, index) => {
+    const fieldKey = matchField(header);
+    if (fieldKey) {
+      fieldMapping[fieldKey] = index;
+      if (!matchedFields.includes(fieldKey)) {
+        matchedFields.push(fieldKey);
+      }
+    } else if (header.trim()) {
+      unmatchedHeaders.push(header);
+    }
+  });
+
+  const missingRequired = REQUIRED_FIELDS
+    .filter(key => !matchedFields.includes(key))
+    .map(key => ({
+      key,
+      label: appConfig.fields.find(f => f.key === key)?.label || (key === 'status' ? '当前状态' : key)
+    }));
+
+  const validRows = [];
+  const invalidRows = [];
+
+  rows.forEach((row, rowIndex) => {
+    const record = {};
+    let hasRequired = true;
+    const missingFields = [];
+
+    ALL_FIELDS.forEach(fieldKey => {
+      const colIndex = fieldMapping[fieldKey];
+      if (colIndex !== undefined && colIndex < row.length) {
+        record[fieldKey] = row[colIndex];
+      }
+    });
+
+    REQUIRED_FIELDS.forEach(key => {
+      if (!record[key] || !String(record[key]).trim()) {
+        hasRequired = false;
+        missingFields.push(appConfig.fields.find(f => f.key === key)?.label || key);
+      }
+    });
+
+    const enrichedRecord = {
+      ...record,
+      status: record.status || appConfig.primaryStatus,
+      _rowNumber: rowIndex + 2,
+      _missingFields: missingFields
+    };
+
+    if (hasRequired) {
+      validRows.push(enrichedRecord);
+    } else {
+      invalidRows.push(enrichedRecord);
+    }
+  });
+
+  return {
+    hasData: true,
+    matchedFields: matchedFields.map(key => ({
+      key,
+      label: appConfig.fields.find(f => f.key === key)?.label || (key === 'status' ? '当前状态' : key)
+    })),
+    unmatchedHeaders,
+    missingRequired,
+    validRows,
+    invalidRows,
+    rowCount: rows.length,
+    fieldMapping
+  };
+}
+
 function App() {
   const [records, setRecords] = useState(loadRecords);
   const [form, setForm] = useState(appConfig.defaultValues);
   const [filters, setFilters] = useState({ query: '', status: '全部' });
   const [selected, setSelected] = useState(null);
+  const [showImport, setShowImport] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importResult, setImportResult] = useState(null);
 
   function persist(next) {
     setRecords(next);
@@ -288,6 +442,55 @@ function App() {
     } : record);
     persist(next);
     setSelected(next.find((record) => record.id === item.id));
+  }
+
+  function handleImportTextChange(value) {
+    setImportText(value);
+    setImportResult(buildImportPreview(value));
+  }
+
+  function openImport() {
+    setShowImport(true);
+    setImportText('');
+    setImportResult(null);
+  }
+
+  function closeImport() {
+    setShowImport(false);
+    setImportText('');
+    setImportResult(null);
+  }
+
+  function confirmImport() {
+    if (!importResult || importResult.validRows.length === 0) return;
+
+    const newRecords = importResult.validRows.map(row => {
+      const baseRecord = {};
+      ALL_FIELDS.forEach(key => {
+        if (row[key] !== undefined) {
+          baseRecord[key] = row[key];
+        }
+      });
+
+      let status = baseRecord.status || appConfig.primaryStatus;
+      if (!appConfig.statuses.includes(status)) {
+        status = appConfig.primaryStatus;
+      }
+
+      return {
+        id: uid(),
+        ...baseRecord,
+        status,
+        createdAt: new Date().toISOString(),
+        timeline: [{ status, at: today, by: '批量导入' }]
+      };
+    });
+
+    persist([...newRecords, ...records]);
+    if (newRecords.length > 0) {
+      setSelected(newRecords[0]);
+    }
+    closeImport();
   }
 
   const filteredRecords = useMemo(() => {
@@ -378,7 +581,10 @@ function App() {
               </select>
             </label>
           </div>
-          <button className="primary" type="submit"><Plus size={18} />新增</button>
+          <div className="form-actions">
+            <button className="primary" type="submit"><Plus size={18} />新增</button>
+            <button type="button" className="secondary" onClick={openImport}><Upload size={18} />批量导入CSV</button>
+          </div>
           <p className="hint">{appConfig.note}</p>
         </form>
 
@@ -473,6 +679,193 @@ function App() {
           )}
         </aside>
       </section>
+
+      {showImport && (
+        <div className="modal-overlay" onClick={closeImport}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="panel-title" style={{ marginBottom: 0 }}>
+                <FileSpreadsheet size={18} />
+                <h2>批量导入CSV</h2>
+              </div>
+              <button type="button" className="icon-btn" onClick={closeImport}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body">
+              <div className="import-section">
+                <label>
+                  <span>粘贴CSV内容</span>
+                  <textarea
+                    className="import-textarea"
+                    value={importText}
+                    onChange={(e) => handleImportTextChange(e.target.value)}
+                    placeholder={`案件,证据材料,来源,取得日期,证明目的,关联争议点,保密等级,当前状态
+合同纠纷案,付款截图,委托人提供,2026-06-02,证明被告已收到预付款,付款事实,内部,已核对
+合同纠纷案,聊天记录,微信导出,2026-06-06,证明交付期限变更,合同成立,机密,待核对`}
+                  />
+                </label>
+                <p className="hint">
+                  <Info size={14} /> 支持字段：案件、证据材料（必填）、来源、取得日期、证明目的、关联争议点、保密等级、当前状态。首行为表头。
+                </p>
+              </div>
+
+              {importResult && importResult.hasData && (
+                <>
+                  <div className="import-summary">
+                    <div className="summary-stat">
+                      <div className="summary-icon ok"><Check size={16} /></div>
+                      <div>
+                        <span>总行数</span>
+                        <strong>{importResult.rowCount}</strong>
+                      </div>
+                    </div>
+                    <div className="summary-stat success">
+                      <div className="summary-icon ok"><CheckCircle2 size={16} /></div>
+                      <div>
+                        <span>可导入</span>
+                        <strong>{importResult.validRows.length}</strong>
+                      </div>
+                    </div>
+                    <div className="summary-stat warning">
+                      <div className="summary-icon warn"><AlertTriangle size={16} /></div>
+                      <div>
+                        <span>跳过</span>
+                        <strong>{importResult.invalidRows.length}</strong>
+                      </div>
+                    </div>
+                    <div className="summary-stat">
+                      <div className="summary-icon info"><FileSpreadsheet size={16} /></div>
+                      <div>
+                        <span>识别字段</span>
+                        <strong>{importResult.matchedFields.length} / 8</strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="import-section">
+                    <h3 className="section-title">
+                      <Check size={16} /> 字段识别结果
+                    </h3>
+                    <div className="field-tags">
+                      {ALL_FIELDS.map(key => {
+                        const field = appConfig.fields.find(f => f.key === key);
+                        const label = field?.label || (key === 'status' ? '当前状态' : key);
+                        const matched = importResult.matchedFields.some(f => f.key === key);
+                        const required = REQUIRED_FIELDS.includes(key);
+                        return (
+                          <span key={key} className={`field-tag ${matched ? 'matched' : 'missing'} ${required ? 'required' : ''}`}>
+                            {matched ? <Check size={12} /> : <AlertCircle size={12} />}
+                            {label}
+                            {required && <em>*</em>}
+                          </span>
+                        );
+                      })}
+                    </div>
+                    {importResult.unmatchedHeaders.length > 0 && (
+                      <div className="unmatched-hint">
+                        <AlertCircle size={14} /> 未识别列：
+                        {importResult.unmatchedHeaders.map((h, i) => (
+                          <code key={i}>{h}</code>
+                        ))}
+                      </div>
+                    )}
+                    {importResult.missingRequired.length > 0 && (
+                      <div className="missing-alert">
+                        <AlertTriangle size={16} /> 缺少必填字段：
+                        {importResult.missingRequired.map(f => f.label).join('、')}，这些行将被跳过。
+                      </div>
+                    )}
+                  </div>
+
+                  {importResult.validRows.length > 0 && (
+                    <div className="import-section">
+                      <h3 className="section-title">
+                        <CheckCircle2 size={16} /> 预览可导入记录 ({importResult.validRows.length}条)
+                      </h3>
+                      <div className="preview-table-wrap">
+                        <table className="preview-table">
+                          <thead>
+                            <tr>
+                              <th style={{ width: 50 }}>#</th>
+                              {importResult.matchedFields.map(f => (
+                                <th key={f.key}>{f.label}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importResult.validRows.slice(0, 10).map((row, idx) => (
+                              <tr key={idx}>
+                                <td className="row-num">{row._rowNumber}</td>
+                                {importResult.matchedFields.map(f => (
+                                  <td key={f.key}>{row[f.key] || <span className="dim">-</span>}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {importResult.validRows.length > 10 && (
+                        <p className="hint">...还有 {importResult.validRows.length - 10} 条记录未显示</p>
+                      )}
+                    </div>
+                  )}
+
+                  {importResult.invalidRows.length > 0 && (
+                    <div className="import-section">
+                      <h3 className="section-title warn-title">
+                        <AlertTriangle size={16} /> 将被跳过的记录 ({importResult.invalidRows.length}条)
+                      </h3>
+                      <div className="preview-table-wrap">
+                        <table className="preview-table invalid-table">
+                          <thead>
+                            <tr>
+                              <th style={{ width: 50 }}>行号</th>
+                              <th>跳过原因</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {importResult.invalidRows.slice(0, 5).map((row, idx) => (
+                              <tr key={idx}>
+                                <td className="row-num">{row._rowNumber}</td>
+                                <td className="warn-text">缺少必填字段：{row._missingFields.join('、')}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {importResult.invalidRows.length > 5 && (
+                        <p className="hint">...还有 {importResult.invalidRows.length - 5} 条记录未显示</p>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {importResult && !importResult.hasData && (
+                <div className="empty-preview">
+                  <FileSpreadsheet size={40} />
+                  <p>请在上方粘贴CSV内容以预览导入结果</p>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer">
+              <button type="button" className="ghost-btn" onClick={closeImport}>取消</button>
+              <button
+                type="button"
+                className="primary"
+                disabled={!importResult || importResult.validRows.length === 0}
+                onClick={confirmImport}
+              >
+                <Check size={18} />
+                确认导入 {importResult?.validRows.length > 0 ? `(${importResult.validRows.length}条)` : ''}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
