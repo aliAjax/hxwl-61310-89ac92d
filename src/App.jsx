@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight, Database, History, Download } from 'lucide-react';
 import './App.css';
 
@@ -949,7 +949,7 @@ function buildImportPreview(text) {
 function App() {
   const [records, setRecords] = useState(loadRecords);
   const [form, setForm] = useState(appConfig.defaultValues);
-  const [filters, setFilters] = useState({ query: '', status: '全部' });
+  const [filters, setFilters] = useState({ query: '', status: '全部', caseName: '', issue: '', level: '' });
   const [selected, setSelected] = useState(null);
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState('');
@@ -1202,10 +1202,26 @@ function App() {
   const allTemplates = useMemo(() => getAllTemplates(customTemplates), [customTemplates]);
   const currentTemplates = allTemplates[form.issue] || [];
 
+  const allIssues = useMemo(() => {
+    const issues = new Set();
+    records.forEach((item) => {
+      if (item.issue) issues.add(item.issue);
+    });
+    return [...issues];
+  }, [records]);
+
+  const allLevels = useMemo(() => {
+    const levelField = appConfig.fields.find((f) => f.key === 'level');
+    return levelField?.options || [];
+  }, []);
+
   const filteredRecords = useMemo(() => {
     return records
       .filter((item) => !filters.query || getSearchableText(item, viewMode).includes(filters.query))
       .filter((item) => filters.status === '全部' || item.status === filters.status)
+      .filter((item) => !filters.caseName || item.caseName === filters.caseName)
+      .filter((item) => !filters.issue || item.issue === filters.issue)
+      .filter((item) => !filters.level || item.level === filters.level)
       .filter((item) => !selectedIssueFilter || (
         item.issue === selectedIssueFilter
         && (!selectedCaseName || item.caseName === selectedCaseName)
@@ -1220,6 +1236,22 @@ function App() {
         return String(aDate).localeCompare(String(bDate));
       });
   }, [records, filters, selectedIssueFilter, selectedCaseName, viewMode]);
+
+  const hasActiveFilters = filters.query || filters.status !== '全部' || filters.caseName || filters.issue || filters.level || selectedIssueFilter;
+
+  function clearAllFilters() {
+    setFilters({ query: '', status: '全部', caseName: '', issue: '', level: '' });
+    setSelectedIssueFilter('');
+  }
+
+  useEffect(() => {
+    if (selected && filteredRecords.length > 0) {
+      const stillVisible = filteredRecords.some((r) => r.id === selected.id);
+      if (!stillVisible) {
+        setSelected(null);
+      }
+    }
+  }, [filteredRecords, selected]);
 
   const displayRecords = useMemo(() => getProcessedRecords(filteredRecords, viewMode), [filteredRecords, viewMode]);
   const displaySelected = useMemo(() => processSingleRecord(selected, viewMode), [selected, viewMode]);
@@ -1239,13 +1271,13 @@ function App() {
   }, [displayRecords]);
 
   const directory = useMemo(() => {
-    const visibleRecords = getProcessedRecords(records, viewMode);
+    const visibleRecords = displayRecords;
     return visibleRecords.reduce((acc, item) => {
       const key = item.issue || '未分类';
       (acc[key] ||= []).push(item);
       return acc;
     }, {});
-  }, [records, viewMode]);
+  }, [displayRecords]);
 
   const caseNames = useMemo(() => {
     const names = [...new Set(records.map((item) => item.caseName))];
@@ -1462,10 +1494,21 @@ function App() {
     return records.filter((r) => r.caseName === workbenchCase);
   }, [records, workbenchCase]);
 
+  const wbIssueOptions = useMemo(() => {
+    if (!workbenchCase) return [];
+    const issues = new Set();
+    wbRecords.forEach((item) => {
+      if (item.issue) issues.add(item.issue);
+    });
+    return [...issues];
+  }, [wbRecords, workbenchCase]);
+
   const wbFilteredRecords = useMemo(() => {
     return wbRecords
       .filter((item) => !filters.query || `${item.caseName}${item.evidence}${item.issue}`.includes(filters.query))
-      .filter((item) => filters.status === '全部' || item.status === filters.status);
+      .filter((item) => filters.status === '全部' || item.status === filters.status)
+      .filter((item) => !filters.issue || item.issue === filters.issue)
+      .filter((item) => !filters.level || item.level === filters.level);
   }, [wbRecords, filters]);
 
   const wbDisplayRecords = useMemo(() => getProcessedRecords(wbRecords, viewMode), [wbRecords, viewMode]);
@@ -1983,14 +2026,42 @@ function App() {
                   <div className="wb-records-section">
                     <h3 className="wb-section-title"><FileText size={16} /> 当前案件证据列表（{wbFilteredRecords.length < wbRecords.length ? `${wbFilteredRecords.length}/${wbRecords.length}` : wbRecords.length}）</h3>
                     <div className="wb-records-toolbar">
-                      <div className="search">
-                        <Search size={16} />
-                        <input value={filters.query} onChange={(e) => setFilters({ ...filters, query: e.target.value })} placeholder="搜索证据名称、争议点" />
+                      <div className="wb-toolbar-row">
+                        <div className="search">
+                          <Search size={16} />
+                          <input value={filters.query} onChange={(e) => setFilters({ ...filters, query: e.target.value })} placeholder="搜索证据名称、争议点" />
+                        </div>
+                        <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+                          <option value="全部">全部状态</option>
+                          {appConfig.statuses.map((s) => <option key={s} value={s}>{s}</option>)}
+                        </select>
                       </div>
-                      <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
-                        <option>全部</option>
-                        {appConfig.statuses.map((s) => <option key={s}>{s}</option>)}
-                      </select>
+                      <div className="wb-toolbar-row wb-filter-row">
+                        <div className="filter-select-wrap">
+                          <Target size={14} />
+                          <select value={filters.issue} onChange={(e) => setFilters({ ...filters, issue: e.target.value })}>
+                            <option value="">全部争议点</option>
+                            {wbIssueOptions.map((issue) => <option key={issue} value={issue}>{issue}</option>)}
+                          </select>
+                        </div>
+                        <div className="filter-select-wrap">
+                          <Shield size={14} />
+                          <select value={filters.level} onChange={(e) => setFilters({ ...filters, level: e.target.value })}>
+                            <option value="">全部保密等级</option>
+                            {allLevels.map((level) => <option key={level} value={level}>{level}</option>)}
+                          </select>
+                        </div>
+                        {(filters.query || filters.status !== '全部' || filters.issue || filters.level) && (
+                          <button type="button" className="clear-filters-btn" onClick={() => setFilters({ ...filters, query: '', status: '全部', issue: '', level: '' })}>
+                            <RotateCcw size={14} /> 重置筛选
+                          </button>
+                        )}
+                        {(filters.query || filters.status !== '全部' || filters.issue || filters.level) && (
+                          <span className="filter-count-badge">
+                            <Filter size={12} /> {wbFilteredRecords.length}/{wbRecords.length}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="wb-records-list">
                       {wbFilteredDisplayRecords.length > 0 ? wbFilteredDisplayRecords.map((item) => (
@@ -2788,14 +2859,49 @@ function App() {
 
         <section className="panel list-panel">
           <div className="toolbar">
-            <div className="search">
-              <Search size={16} />
-              <input value={filters.query} onChange={(event) => setFilters({ ...filters, query: event.target.value })} placeholder={appConfig.filters[0]?.label || '搜索'} />
+            <div className="toolbar-row">
+              <div className="search">
+                <Search size={16} />
+                <input value={filters.query} onChange={(event) => setFilters({ ...filters, query: event.target.value })} placeholder="案件/证据关键词搜索" />
+              </div>
+              <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}>
+                <option value="全部">全部状态</option>
+                {appConfig.statuses.map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
             </div>
-            <select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}>
-              <option>全部</option>
-              {appConfig.statuses.map((status) => <option key={status}>{status}</option>)}
-            </select>
+            <div className="toolbar-row toolbar-filter-row">
+              <div className="filter-select-wrap">
+                <Briefcase size={14} />
+                <select value={filters.caseName} onChange={(event) => setFilters({ ...filters, caseName: event.target.value })}>
+                  <option value="">全部案件</option>
+                  {caseNames.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </div>
+              <div className="filter-select-wrap">
+                <Target size={14} />
+                <select value={filters.issue} onChange={(event) => setFilters({ ...filters, issue: event.target.value })}>
+                  <option value="">全部争议点</option>
+                  {allIssues.map((issue) => <option key={issue} value={issue}>{issue}</option>)}
+                </select>
+              </div>
+              <div className="filter-select-wrap">
+                <Shield size={14} />
+                <select value={filters.level} onChange={(event) => setFilters({ ...filters, level: event.target.value })}>
+                  <option value="">全部保密等级</option>
+                  {allLevels.map((level) => <option key={level} value={level}>{level}</option>)}
+                </select>
+              </div>
+              {hasActiveFilters && (
+                <button type="button" className="clear-filters-btn" onClick={clearAllFilters}>
+                  <RotateCcw size={14} /> 清空筛选
+                </button>
+              )}
+              {hasActiveFilters && (
+                <span className="filter-count-badge">
+                  <Filter size={12} /> 筛选中 · {filteredRecords.length}/{records.length}
+                </span>
+              )}
+            </div>
           </div>
 
           <div className="records">
