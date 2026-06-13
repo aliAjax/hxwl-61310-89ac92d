@@ -4285,8 +4285,8 @@ function App() {
                           source: item.source || '',
                           issue: item.issue || '',
                           level: item.level || '',
-                          evidence: '',
-                          purpose: '',
+                          evidence: item.evidence || '',
+                          purpose: item.purpose || '',
                           date: '',
                         });
                         setShowEvidencePicker(false);
