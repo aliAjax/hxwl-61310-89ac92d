@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter } from 'lucide-react';
+import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -692,6 +692,16 @@ function App() {
     status: 'all',
   });
   const [editingTaskId, setEditingTaskId] = useState(null);
+  const [workbenchCase, setWorkbenchCase] = useState('');
+  const [workbenchTab, setWorkbenchTab] = useState('evidence');
+
+  const WORKBENCH_TABS = [
+    { key: 'evidence', label: '证据录入', icon: ClipboardList },
+    { key: 'coverage', label: '争议点覆盖', icon: Target },
+    { key: 'timeline', label: '证据链时间线', icon: GitBranch },
+    { key: 'tasks', label: '补强任务', icon: AlertTriangle },
+    { key: 'export', label: '导出预览', icon: Eye },
+  ];
 
   const VIEW_MODES = [
     { key: '公开', label: '公开模式', desc: '机密信息脱敏，仅见公开材料', color: '#047857' },
@@ -1136,6 +1146,69 @@ function App() {
     return { total, pending, inProgress, completed, overdue };
   }, [tasks]);
 
+  const wbRecords = useMemo(() => {
+    if (!workbenchCase) return [];
+    return records.filter((r) => r.caseName === workbenchCase);
+  }, [records, workbenchCase]);
+
+  const wbDisplayRecords = useMemo(() => getProcessedRecords(wbRecords, viewMode), [wbRecords, viewMode]);
+
+  const wbCoverage = useMemo(() => {
+    if (!workbenchCase) return null;
+    return computeIssueCoverage(customIssues, workbenchCase, records);
+  }, [records, workbenchCase, customIssues]);
+
+  const wbTimeline = useMemo(() => {
+    if (!workbenchCase) return [];
+    const caseRecords = wbDisplayRecords.filter((item) => item.date);
+    const noDate = wbDisplayRecords.filter((item) => !item.date);
+    const grouped = {};
+    caseRecords.forEach((item) => {
+      (grouped[item.date] ||= []).push(item);
+    });
+    const sortedDates = Object.keys(grouped).sort();
+    const result = sortedDates.map((date) => ({ date, items: grouped[date], isNoDate: false }));
+    if (noDate.length > 0) {
+      result.push({ date: '未标注日期', items: noDate, isNoDate: true });
+    }
+    return result;
+  }, [wbDisplayRecords, workbenchCase]);
+
+  const wbTasks = useMemo(() => {
+    if (!workbenchCase) return [];
+    return tasks.filter((t) => t.caseName === workbenchCase);
+  }, [tasks, workbenchCase]);
+
+  const wbExportData = useMemo(() => {
+    if (!workbenchCase) return [];
+    let data = records.filter((item) => item.caseName === workbenchCase);
+    return data;
+  }, [records, workbenchCase]);
+
+  const wbDirectory = useMemo(() => {
+    if (!workbenchCase) return {};
+    const visibleRecords = getProcessedRecords(wbRecords, viewMode);
+    return visibleRecords.reduce((acc, item) => {
+      const key = item.issue || '未分类';
+      (acc[key] ||= []).push(item);
+      return acc;
+    }, {});
+  }, [wbRecords, viewMode, workbenchCase]);
+
+  const wbStats = useMemo(() => {
+    if (!workbenchCase) return null;
+    const caseRecords = records.filter((item) => item.caseName === workbenchCase);
+    return {
+      total: caseRecords.length,
+      pending: caseRecords.filter((r) => r.status === '待核对').length,
+      verified: caseRecords.filter((r) => r.status === '已核对').length,
+      needStrengthen: caseRecords.filter((r) => r.status === '需补强').length,
+      issues: new Set(caseRecords.map((r) => r.issue).filter(Boolean)).size,
+      tasks: wbTasks.length,
+      tasksOverdue: wbTasks.filter((t) => isTaskOverdue(t)).length,
+    };
+  }, [records, workbenchCase, wbTasks]);
+
   function isBuiltInIssue(issueName) {
     const builtIn = appConfig.fields.find((f) => f.key === 'issue')?.options || [];
     return builtIn.includes(issueName);
@@ -1296,6 +1369,446 @@ function App() {
             <strong>{metric.value}</strong>
           </article>
         ))}
+      </section>
+
+      <section className="panel workbench-panel">
+        <div className="panel-title">
+          <LayoutGrid size={18} />
+          <h2>案件证据工作台</h2>
+          <div className="workbench-case-selector">
+            <Briefcase size={16} />
+            <select value={workbenchCase} onChange={(e) => { setWorkbenchCase(e.target.value); setWorkbenchTab('evidence'); }}>
+              <option value="">请选择案件进入工作台</option>
+              {caseNames.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            <ChevronDown size={16} />
+          </div>
+        </div>
+
+        {!workbenchCase ? (
+          <div className="workbench-empty">
+            <LayoutGrid size={48} />
+            <h3>选择案件，进入专属工作台</h3>
+            <p>在同一工作区内切换查看证据录入、争议点覆盖、证据链时间线、补强任务和导出预览</p>
+          </div>
+        ) : (
+          <>
+            <div className="workbench-stats">
+              <div className="wb-stat-card">
+                <FileSpreadsheet size={18} />
+                <div>
+                  <span>证据</span>
+                  <strong>{wbStats.total}</strong>
+                </div>
+              </div>
+              <div className="wb-stat-card wb-pending">
+                <Clock size={18} />
+                <div>
+                  <span>待核对</span>
+                  <strong>{wbStats.pending}</strong>
+                </div>
+              </div>
+              <div className="wb-stat-card wb-verified">
+                <CheckCircle2 size={18} />
+                <div>
+                  <span>已核对</span>
+                  <strong>{wbStats.verified}</strong>
+                </div>
+              </div>
+              <div className="wb-stat-card wb-strengthen">
+                <AlertTriangle size={18} />
+                <div>
+                  <span>需补强</span>
+                  <strong>{wbStats.needStrengthen}</strong>
+                </div>
+              </div>
+              <div className="wb-stat-card wb-issues">
+                <Target size={18} />
+                <div>
+                  <span>争议点</span>
+                  <strong>{wbStats.issues}</strong>
+                </div>
+              </div>
+              <div className="wb-stat-card wb-tasks">
+                <ListChecks size={18} />
+                <div>
+                  <span>任务{wbStats.tasksOverdue > 0 ? `(${wbStats.tasksOverdue}逾期)` : ''}</span>
+                  <strong>{wbStats.tasks}</strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="workbench-tabs">
+              {WORKBENCH_TABS.map((tab) => {
+                const Icon = tab.icon;
+                return (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    className={`workbench-tab ${workbenchTab === tab.key ? 'active' : ''}`}
+                    onClick={() => setWorkbenchTab(tab.key)}
+                  >
+                    <Icon size={16} />
+                    <span>{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="workbench-content">
+              {workbenchTab === 'evidence' && (
+                <div className="wb-evidence-tab">
+                  <div className="wb-form-section">
+                    <h3 className="wb-section-title"><ClipboardList size={16} /> 快速录入证据到当前案件</h3>
+                    <form className="wb-form" onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!form.evidence || !form.caseName) return;
+                      const nextRecord = {
+                        id: uid(),
+                        ...form,
+                        caseName: workbenchCase,
+                        status: form.status || appConfig.primaryStatus,
+                        createdAt: new Date().toISOString(),
+                        timeline: [{ status: form.status || appConfig.primaryStatus, at: today, by: '工作台录入' }]
+                      };
+                      persist([nextRecord, ...records]);
+                      setForm(appConfig.defaultValues);
+                      setSelected(nextRecord);
+                    }}>
+                      <div className="wb-form-grid">
+                        {appConfig.fields.filter((f) => f.key !== 'caseName').map((field) => (
+                          field.key === 'purpose' ? (
+                            <label key={field.key} className="wb-wide">
+                              <span>{field.label}</span>
+                              <textarea value={form[field.key] || ''} onChange={(e) => setForm({ ...form, [field.key]: e.target.value, caseName: workbenchCase })} placeholder={field.placeholder} rows={2} />
+                            </label>
+                          ) : field.type === 'select' ? (
+                            <label key={field.key}>
+                              <span>{field.label}</span>
+                              <select value={form[field.key] || ''} onChange={(e) => setForm({ ...form, [field.key]: e.target.value, caseName: workbenchCase })}>
+                                <option value="">请选择</option>
+                                {(field.key === 'issue' ? getAllIssues(customIssues, workbenchCase, records) : field.options).map((opt) => <option key={opt}>{opt}</option>)}
+                              </select>
+                            </label>
+                          ) : (
+                            <label key={field.key}>
+                              <span>{field.label}</span>
+                              <input type={field.type} value={field.key === 'caseName' ? workbenchCase : (form[field.key] || '')} onChange={(e) => setForm({ ...form, [field.key]: e.target.value, caseName: workbenchCase })} placeholder={field.placeholder} readOnly={field.key === 'caseName'} />
+                            </label>
+                          )
+                        ))}
+                        <label>
+                          <span>当前状态</span>
+                          <select value={form.status || appConfig.primaryStatus} onChange={(e) => setForm({ ...form, status: e.target.value, caseName: workbenchCase })}>
+                            {appConfig.statuses.map((s) => <option key={s}>{s}</option>)}
+                          </select>
+                        </label>
+                      </div>
+                      <div className="wb-form-actions">
+                        <button className="primary" type="submit"><Plus size={16} />录入证据</button>
+                        <button type="button" className="secondary" onClick={openImport}><Upload size={16} />批量导入CSV</button>
+                      </div>
+                    </form>
+                  </div>
+
+                  <div className="wb-records-section">
+                    <h3 className="wb-section-title"><FileText size={16} /> 当前案件证据列表（{wbRecords.length}）</h3>
+                    <div className="wb-records-toolbar">
+                      <div className="search">
+                        <Search size={16} />
+                        <input value={filters.query} onChange={(e) => setFilters({ ...filters, query: e.target.value })} placeholder="搜索证据名称、争议点" />
+                      </div>
+                      <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+                        <option>全部</option>
+                        {appConfig.statuses.map((s) => <option key={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    <div className="wb-records-list">
+                      {wbDisplayRecords.length > 0 ? wbDisplayRecords.map((item) => (
+                        <article key={item.id} className={`wb-record-card ${item._masked ? 'masked-record' : ''}`} onClick={() => setSelected(records.find((r) => r.id === item.id))}>
+                          <div className="wb-record-head">
+                            <h4>
+                              {item.evidence}
+                              {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+                            </h4>
+                            <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                          </div>
+                          <div className="wb-record-meta">
+                            <span><Target size={12} />{item.issue || '未关联'}</span>
+                            <span><Shield size={12} />{item.level || '内部'}</span>
+                            <span><CalendarDays size={12} />{item.date || '未标注'}</span>
+                          </div>
+                          <p className="wb-record-purpose">{item.purpose}</p>
+                          <div className="wb-record-actions" onClick={(e) => e.stopPropagation()}>
+                            {appConfig.statuses.map((s) => (
+                              <button key={s} type="button" onClick={() => updateStatus(item.id, s)}>{s}</button>
+                            ))}
+                            {item.status === '需补强' && !item._masked && (
+                              <button type="button" className="task-btn" onClick={() => openCreateTaskFromEvidence(records.find((r) => r.id === item.id))}>
+                                <AlertTriangle size={14} /> 生成任务
+                              </button>
+                            )}
+                            <button className="ghost-danger" type="button" onClick={() => removeRecord(item.id)}><Trash2 size={14} /></button>
+                          </div>
+                        </article>
+                      )) : (
+                        <div className="wb-empty-hint">
+                          <FileText size={32} />
+                          <p>该案件暂无证据记录，请通过上方表单录入</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {workbenchTab === 'coverage' && (
+                <div className="wb-coverage-tab">
+                  {wbCoverage ? (
+                    <>
+                      <div className="wb-coverage-summary">
+                        <div className="wb-cov-stat wb-cov-covered">
+                          <CheckCircle2 size={18} />
+                          <strong>{wbCoverage.filter((i) => i.coverageStatus === 'covered').length}</strong>
+                          <span>已覆盖</span>
+                        </div>
+                        <div className="wb-cov-stat wb-cov-partial">
+                          <Info size={18} />
+                          <strong>{wbCoverage.filter((i) => i.coverageStatus === 'partial').length}</strong>
+                          <span>部分覆盖</span>
+                        </div>
+                        <div className="wb-cov-stat wb-cov-waiting">
+                          <Clock size={18} />
+                          <strong>{wbCoverage.filter((i) => i.coverageStatus === 'all-pending').length}</strong>
+                          <span>待核对</span>
+                        </div>
+                        <div className="wb-cov-stat wb-cov-strengthen">
+                          <AlertTriangle size={18} />
+                          <strong>{wbCoverage.filter((i) => i.coverageStatus === 'need-strengthen').length}</strong>
+                          <span>需补强</span>
+                        </div>
+                        <div className="wb-cov-stat wb-cov-none">
+                          <AlertCircle size={18} />
+                          <strong>{wbCoverage.filter((i) => i.coverageStatus === 'none').length}</strong>
+                          <span>无证据</span>
+                        </div>
+                      </div>
+                      <div className="wb-coverage-grid">
+                        {wbCoverage.map((issue) => {
+                          const meta = COVERAGE_STATUS_META[issue.coverageStatus];
+                          return (
+                            <div key={issue.name} className="wb-cov-card" style={{ borderColor: meta.border, background: meta.bg }}>
+                              <div className="wb-cov-card-head">
+                                <span className="coverage-indicator" style={{ background: meta.color }} />
+                                <h4 style={{ color: meta.color }}>{issue.name}</h4>
+                                <span className="coverage-badge" style={{ background: meta.color, color: '#fff' }}>{meta.label}</span>
+                              </div>
+                              <div className="wb-cov-counts">
+                                <span>总{issue.total}</span>
+                                <span>已核对{issue.verified}</span>
+                                <span>待核对{issue.pending}</span>
+                                <span>需补强{issue.needStrengthen}</span>
+                              </div>
+                              <div className="issue-progress-bar">
+                                {issue.total > 0 && (
+                                  <>
+                                    {issue.verified > 0 && <div className="progress-segment ps-verified" style={{ width: `${(issue.verified / issue.total) * 100}%` }} />}
+                                    {issue.pending > 0 && <div className="progress-segment ps-pending" style={{ width: `${(issue.pending / issue.total) * 100}%` }} />}
+                                    {issue.needStrengthen > 0 && <div className="progress-segment ps-strengthen" style={{ width: `${(issue.needStrengthen / issue.total) * 100}%` }} />}
+                                  </>
+                                )}
+                              </div>
+                              {issue.records.length > 0 && (
+                                <div className="issue-evidence-preview">
+                                  <div className="issue-evidence-tags">
+                                    {issue.records.slice(0, 5).map((ev) => {
+                                      const masked = applyMaskToRecord(ev, viewMode);
+                                      return (
+                                        <span key={ev.id} className={`issue-evidence-tag status ${statusClass(ev.status)} ${masked._masked ? 'masked-record' : ''}`} onClick={(e) => { e.stopPropagation(); setSelected(ev); }}>
+                                          {masked.evidence}
+                                        </span>
+                                      );
+                                    })}
+                                    {issue.records.length > 5 && <span className="issue-evidence-more">+{issue.records.length - 5} 更多</span>}
+                                  </div>
+                                </div>
+                              )}
+                              {issue.coverageStatus === 'none' && (
+                                <div className="issue-empty-hint">
+                                  <AlertCircle size={14} />
+                                  该争议点暂无证据材料，请尽快补充
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="wb-empty-hint"><Target size={32} /><p>请选择案件</p></div>
+                  )}
+                </div>
+              )}
+
+              {workbenchTab === 'timeline' && (
+                <div className="wb-timeline-tab">
+                  {wbTimeline.length > 0 ? (
+                    <div className="timeline-track">
+                      {wbTimeline.map((group, groupIdx) => (
+                        <div key={group.date} className={`timeline-group ${group.isNoDate ? 'no-date-group' : ''}`}>
+                          <div className="timeline-date-marker">
+                            <div className="timeline-dot-wrapper">
+                              {groupIdx === 0 ? <CircleDot size={14} /> : <span className="timeline-dot" />}
+                              {groupIdx < wbTimeline.length - 1 && <span className="timeline-line" />}
+                            </div>
+                            <div className="timeline-date-label">
+                              <CalendarDays size={14} />
+                              <span>{group.isNoDate ? '未标注日期' : group.date}</span>
+                              <span className="timeline-count">{group.items.length} 份</span>
+                            </div>
+                          </div>
+                          <div className="timeline-items">
+                            {group.items.map((item) => (
+                              <div key={item.id} className={`timeline-node ${selected?.id === item.id ? 'active' : ''} ${item._masked ? 'masked-record' : ''}`} onClick={() => setSelected(records.find((r) => r.id === item.id))}>
+                                <div className="timeline-node-head">
+                                  <span className="timeline-node-title">
+                                    {item.evidence}
+                                    {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+                                  </span>
+                                  <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                                </div>
+                                <div className="timeline-node-meta">
+                                  <span><Briefcase size={12} />{item.source || '未标注'}</span>
+                                  <span><Target size={12} />{item.issue || '未关联'}</span>
+                                </div>
+                                <div className="timeline-node-purpose">{item.purpose || '无证明目的'}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="wb-empty-hint"><GitBranch size={32} /><p>该案件暂无带日期的证据记录</p></div>
+                  )}
+                </div>
+              )}
+
+              {workbenchTab === 'tasks' && (
+                <div className="wb-tasks-tab">
+                  {wbTasks.length > 0 ? (
+                    <div className="wb-tasks-list">
+                      {wbTasks.map((task) => {
+                        const overdue = isTaskOverdue(task);
+                        const daysLeft = getTaskDaysLeft(task);
+                        const statusMeta = TASK_STATUS_META[task.status];
+                        return (
+                          <div key={task.id} className={`task-card ${overdue ? 'overdue' : ''}`} style={{ borderLeftColor: overdue ? '#dc2626' : statusMeta.color }}>
+                            <div className="task-card-header">
+                              <div className="task-card-title-row">
+                                <h4 className="task-evidence-name"><FileText size={16} /> {task.evidenceName}</h4>
+                                <span className="task-status-chip" style={{ background: statusMeta.bg, color: statusMeta.color, borderColor: statusMeta.border }}>{task.status}</span>
+                                {overdue && (
+                                  <span className="overdue-chip"><AlertCircle size={12} /> 逾期{daysLeft !== null ? ` ${Math.abs(daysLeft)} 天` : ''}</span>
+                                )}
+                                {!overdue && daysLeft !== null && task.status !== '已完成' && task.status !== '已取消' && daysLeft <= 3 && (
+                                  <span className="urgent-chip"><Clock size={12} /> {daysLeft === 0 ? '今日截止' : `剩 ${daysLeft} 天`}</span>
+                                )}
+                              </div>
+                              <div className="task-card-meta-row">
+                                <span className="task-issue-tag"><Target size={12} /> {task.issue || '未关联'}</span>
+                              </div>
+                            </div>
+                            <div className="task-card-body">
+                              <div className="task-reason-block">
+                                <span className="task-block-label">补强原因</span>
+                                <p className="task-reason-text">{task.reason}</p>
+                              </div>
+                              <div className="task-info-row">
+                                <div className="task-info-item"><Briefcase size={14} /><span className="ti-label">负责人：</span><span className="ti-value">{task.assignee}</span></div>
+                                <div className="task-info-item"><CalendarDays size={14} /><span className="ti-label">截止日期：</span><span className={`ti-value ${overdue ? 'overdue-text' : ''}`}>{task.deadline}</span></div>
+                              </div>
+                            </div>
+                            <div className="task-card-footer">
+                              <div className="task-status-actions">
+                                {TASK_STATUSES.map((s) => (
+                                  <button key={s} type="button" className={`task-status-btn ${task.status === s ? 'active' : ''}`} onClick={() => handleTaskStatusChange(task.id, s)} style={task.status === s ? { background: statusMeta.color, color: '#fff', borderColor: statusMeta.color } : {}}>{s}</button>
+                                ))}
+                              </div>
+                              <div className="task-card-actions">
+                                <button type="button" className="task-action-btn edit" onClick={() => openEditTask(task)}>编辑</button>
+                                <button type="button" className="task-action-btn delete" onClick={() => handleTaskDelete(task.id)}><Trash2 size={14} /> 删除</button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="wb-empty-hint">
+                      <ListChecks size={32} />
+                      <p>该案件暂无补强任务</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {workbenchTab === 'export' && (
+                <div className="wb-export-tab">
+                  <div className="wb-export-config">
+                    <label className="checkbox-label">
+                      <input type="checkbox" checked={exportConfig.hideConfidential} onChange={(e) => setExportConfig({ ...exportConfig, hideConfidential: e.target.checked })} />
+                      <span>隐藏「机密」材料</span>
+                    </label>
+                    <label className="checkbox-label">
+                      <input type="checkbox" checked={exportConfig.groupByIssue} onChange={(e) => setExportConfig({ ...exportConfig, groupByIssue: e.target.checked })} />
+                      <span>按争议点分组</span>
+                    </label>
+                  </div>
+                  <div className="wb-export-stats">
+                    <div className="summary-stat"><div className="summary-icon info"><FileSpreadsheet size={16} /></div><div><span>证据数</span><strong>{wbExportData.length}</strong></div></div>
+                    <div className="summary-stat"><div className="summary-icon ok"><Target size={16} /></div><div><span>争议点</span><strong>{new Set(wbExportData.map((i) => i.issue).filter(Boolean)).size}</strong></div></div>
+                    <div className="summary-stat warning"><div className="summary-icon warn"><Shield size={16} /></div><div><span>机密</span><strong>{wbExportData.filter((i) => i.level === '机密').length}</strong></div></div>
+                  </div>
+                  {wbExportData.length > 0 ? (
+                    <div className="wb-directory-preview">
+                      <h3 className="wb-section-title"><FileText size={16} /> 证据目录预览</h3>
+                      {exportConfig.groupByIssue ? (
+                        Object.entries(wbDirectory).map(([issue, items]) => (
+                          <div key={issue} className="directory-group">
+                            <strong>{issue}</strong>
+                            {items.map((item, index) => (
+                              <span key={item.id} className={item._masked ? 'masked-dir-entry' : ''}>
+                                {index + 1}. {item.evidence}｜{item.purpose}
+                                {item._masked && <em className="dir-masked-tag"><Shield size={10} />脱敏</em>}
+                              </span>
+                            ))}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="directory-group">
+                          <strong>全部证据</strong>
+                          {wbExportData.map((item, index) => (
+                            <span key={item.id}>{index + 1}. {item.evidence}｜{item.purpose}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="wb-empty-hint"><FileText size={32} /><p>该案件暂无可导出的证据</p></div>
+                  )}
+                  <div className="wb-export-actions">
+                    <button type="button" className="primary" onClick={() => { setExportConfig({ ...exportConfig, caseName: workbenchCase }); openExport(); }}>
+                      <Printer size={16} /> 打开完整导出预览
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </section>
 
       <section className="panel case-overview">
