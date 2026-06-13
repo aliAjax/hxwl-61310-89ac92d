@@ -203,11 +203,25 @@ function withIds(items) {
   return items.map((item) => ({ id: uid(), timeline: item.timeline || [{ status: item.status, at: today, by: '系统' }], ...item }));
 }
 
+function ensureRecordIntegrity(items) {
+  return items.map((item) => ({
+    id: item.id || uid(),
+    timeline: item.timeline && Array.isArray(item.timeline) && item.timeline.length > 0
+      ? item.timeline
+      : [{ status: item.status || appConfig.primaryStatus, at: today, by: '系统' }],
+    ...item,
+  }));
+}
+
 function loadRecords() {
   const raw = localStorage.getItem(appConfig.storage);
   if (raw) {
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return withIds(appConfig.seed);
+      }
+      return ensureRecordIntegrity(parsed);
     } catch {
       return withIds(appConfig.seed);
     }
@@ -1151,7 +1165,14 @@ function App() {
     return records.filter((r) => r.caseName === workbenchCase);
   }, [records, workbenchCase]);
 
+  const wbFilteredRecords = useMemo(() => {
+    return wbRecords
+      .filter((item) => !filters.query || `${item.caseName}${item.evidence}${item.issue}`.includes(filters.query))
+      .filter((item) => filters.status === '全部' || item.status === filters.status);
+  }, [wbRecords, filters]);
+
   const wbDisplayRecords = useMemo(() => getProcessedRecords(wbRecords, viewMode), [wbRecords, viewMode]);
+  const wbFilteredDisplayRecords = useMemo(() => getProcessedRecords(wbFilteredRecords, viewMode), [wbFilteredRecords, viewMode]);
 
   const wbCoverage = useMemo(() => {
     if (!workbenchCase) return null;
@@ -1514,7 +1535,7 @@ function App() {
                   </div>
 
                   <div className="wb-records-section">
-                    <h3 className="wb-section-title"><FileText size={16} /> 当前案件证据列表（{wbRecords.length}）</h3>
+                    <h3 className="wb-section-title"><FileText size={16} /> 当前案件证据列表（{wbFilteredRecords.length < wbRecords.length ? `${wbFilteredRecords.length}/${wbRecords.length}` : wbRecords.length}）</h3>
                     <div className="wb-records-toolbar">
                       <div className="search">
                         <Search size={16} />
@@ -1526,7 +1547,7 @@ function App() {
                       </select>
                     </div>
                     <div className="wb-records-list">
-                      {wbDisplayRecords.length > 0 ? wbDisplayRecords.map((item) => (
+                      {wbFilteredDisplayRecords.length > 0 ? wbFilteredDisplayRecords.map((item) => (
                         <article key={item.id} className={`wb-record-card ${item._masked ? 'masked-record' : ''}`} onClick={() => setSelected(records.find((r) => r.id === item.id))}>
                           <div className="wb-record-head">
                             <h4>
@@ -1556,7 +1577,7 @@ function App() {
                       )) : (
                         <div className="wb-empty-hint">
                           <FileText size={32} />
-                          <p>该案件暂无证据记录，请通过上方表单录入</p>
+                          <p>{wbRecords.length > 0 ? '暂无符合当前筛选条件的记录，请调整搜索关键词或状态筛选' : '该案件暂无证据记录，请通过上方表单录入'}</p>
                         </div>
                       )}
                     </div>
