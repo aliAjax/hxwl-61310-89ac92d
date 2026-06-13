@@ -12,6 +12,7 @@ const appConfig = {
   "storage": "hxwl-61310-legal-evidence",
   "templateStorage": "hxwl-61310-purpose-templates",
   "issueStorage": "hxwl-61310-custom-issues",
+  "taskStorage": "hxwl-61310-strengthen-tasks",
   "accent": "#475569",
   "statuses": [
     "待核对",
@@ -292,6 +293,85 @@ function removeCustomIssue(customIssues, caseName, issue) {
   }
   saveCustomIssues(next);
   return next;
+}
+
+const TASK_STATUSES = ['待处理', '处理中', '已完成', '已取消'];
+const TASK_PRIMARY_STATUS = '待处理';
+const TASK_STATUS_META = {
+  '待处理': { color: '#6b7280', bg: '#f3f4f6', border: '#d1d5db' },
+  '处理中': { color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe' },
+  '已完成': { color: '#047857', bg: '#ecfdf3', border: '#a7f3d0' },
+  '已取消': { color: '#9ca3af', bg: '#f9fafb', border: '#e5e7eb' },
+};
+
+function loadTasks() {
+  const raw = localStorage.getItem(appConfig.taskStorage);
+  if (raw) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function saveTasks(tasks) {
+  localStorage.setItem(appConfig.taskStorage, JSON.stringify(tasks));
+}
+
+function addTask(tasks, taskData) {
+  const newTask = {
+    id: uid(),
+    ...taskData,
+    status: taskData.status || TASK_PRIMARY_STATUS,
+    createdAt: new Date().toISOString(),
+    timeline: [{ status: taskData.status || TASK_PRIMARY_STATUS, at: today, by: '系统' }],
+  };
+  const next = [newTask, ...tasks];
+  saveTasks(next);
+  return next;
+}
+
+function updateTask(tasks, taskId, updates) {
+  const next = tasks.map((task) => {
+    if (task.id !== taskId) return task;
+    const updatedTask = { ...task, ...updates };
+    if (updates.status && updates.status !== task.status) {
+      updatedTask.timeline = [
+        ...(task.timeline || []),
+        { status: updates.status, at: today, by: '操作员' },
+      ];
+    }
+    return updatedTask;
+  });
+  saveTasks(next);
+  return next;
+}
+
+function removeTask(tasks, taskId) {
+  const next = tasks.filter((task) => task.id !== taskId);
+  saveTasks(next);
+  return next;
+}
+
+function isTaskOverdue(task) {
+  if (!task.deadline || task.status === '已完成' || task.status === '已取消') return false;
+  const deadlineDate = new Date(task.deadline);
+  const now = new Date(today);
+  return deadlineDate < now;
+}
+
+function getTaskDaysLeft(task) {
+  if (!task.deadline) return null;
+  const deadlineDate = new Date(task.deadline);
+  const now = new Date(today);
+  const diff = Math.ceil((deadlineDate.getTime() - now.getTime()) / 86400000);
+  return diff;
+}
+
+function getTasksForEvidence(tasks, evidenceId) {
+  return tasks.filter((task) => task.evidenceId === evidenceId);
 }
 
 function getAllIssues(customIssues, caseName, records) {
@@ -592,6 +672,26 @@ function App() {
   const [newIssueInput, setNewIssueInput] = useState('');
   const [issueCoverageFilter, setIssueCoverageFilter] = useState('all');
   const [viewMode, setViewMode] = useState('机密');
+  const [tasks, setTasks] = useState(loadTasks);
+  const [showTaskModal, setShowTaskModal] = useState(false);
+  const [taskModalMode, setTaskModalMode] = useState('create');
+  const [taskForm, setTaskForm] = useState({
+    evidenceId: '',
+    caseName: '',
+    evidenceName: '',
+    issue: '',
+    reason: '',
+    assignee: '',
+    deadline: '',
+    status: TASK_PRIMARY_STATUS,
+  });
+  const [taskFilters, setTaskFilters] = useState({
+    caseName: '',
+    issue: '',
+    overdueStatus: 'all',
+    status: 'all',
+  });
+  const [editingTaskId, setEditingTaskId] = useState(null);
 
   const VIEW_MODES = [
     { key: '公开', label: '公开模式', desc: '机密信息脱敏，仅见公开材料', color: '#047857' },
@@ -905,6 +1005,136 @@ function App() {
     const next = removeCustomIssue(customIssues, selectedCaseName, issueName);
     setCustomIssues(next);
   }
+
+  function openCreateTaskFromEvidence(evidence) {
+    setTaskForm({
+      evidenceId: evidence.id,
+      caseName: evidence.caseName,
+      evidenceName: evidence.evidence,
+      issue: evidence.issue,
+      reason: '',
+      assignee: '',
+      deadline: '',
+      status: TASK_PRIMARY_STATUS,
+    });
+    setTaskModalMode('create');
+    setEditingTaskId(null);
+    setShowTaskModal(true);
+  }
+
+  function openEditTask(task) {
+    setTaskForm({
+      evidenceId: task.evidenceId,
+      caseName: task.caseName,
+      evidenceName: task.evidenceName,
+      issue: task.issue,
+      reason: task.reason,
+      assignee: task.assignee,
+      deadline: task.deadline,
+      status: task.status,
+    });
+    setTaskModalMode('edit');
+    setEditingTaskId(task.id);
+    setShowTaskModal(true);
+  }
+
+  function closeTaskModal() {
+    setShowTaskModal(false);
+    setTaskModalMode('create');
+    setEditingTaskId(null);
+    setTaskForm({
+      evidenceId: '',
+      caseName: '',
+      evidenceName: '',
+      issue: '',
+      reason: '',
+      assignee: '',
+      deadline: '',
+      status: TASK_PRIMARY_STATUS,
+    });
+  }
+
+  function handleTaskFormSubmit(event) {
+    event.preventDefault();
+    if (!taskForm.evidenceId || !taskForm.reason.trim() || !taskForm.assignee.trim() || !taskForm.deadline) {
+      alert('请填写完整的任务信息（补强原因、负责人、截止日期为必填）');
+      return;
+    }
+    if (taskModalMode === 'create') {
+      const next = addTask(tasks, { ...taskForm });
+      setTasks(next);
+    } else if (taskModalMode === 'edit' && editingTaskId) {
+      const next = updateTask(tasks, editingTaskId, { ...taskForm });
+      setTasks(next);
+    }
+    closeTaskModal();
+  }
+
+  function handleTaskStatusChange(taskId, newStatus) {
+    const next = updateTask(tasks, taskId, { status: newStatus });
+    setTasks(next);
+  }
+
+  function handleTaskDelete(taskId) {
+    if (confirm('确定要删除这个补强任务吗？')) {
+      const next = removeTask(tasks, taskId);
+      setTasks(next);
+    }
+  }
+
+  const taskIssueOptions = useMemo(() => {
+    const issues = new Set();
+    tasks.forEach((task) => {
+      if (task.issue) issues.add(task.issue);
+    });
+    return [...issues];
+  }, [tasks]);
+
+  const taskCaseOptions = useMemo(() => {
+    const cases = new Set();
+    tasks.forEach((task) => {
+      if (task.caseName) cases.add(task.caseName);
+    });
+    return [...cases];
+  }, [tasks]);
+
+  const filteredTasks = useMemo(() => {
+    return tasks.filter((task) => {
+      if (taskFilters.caseName && task.caseName !== taskFilters.caseName) return false;
+      if (taskFilters.issue && task.issue !== taskFilters.issue) return false;
+      if (taskFilters.status !== 'all' && task.status !== taskFilters.status) return false;
+      if (taskFilters.overdueStatus !== 'all') {
+        const overdue = isTaskOverdue(task);
+        if (taskFilters.overdueStatus === 'overdue' && !overdue) return false;
+        if (taskFilters.overdueStatus === 'not-overdue' && overdue) return false;
+      }
+      return true;
+    }).sort((a, b) => {
+      const aOverdue = isTaskOverdue(a) ? 0 : 1;
+      const bOverdue = isTaskOverdue(b) ? 0 : 1;
+      if (aOverdue !== bOverdue) return aOverdue - bOverdue;
+      if (a.deadline && b.deadline) {
+        return a.deadline.localeCompare(b.deadline);
+      }
+      if (a.deadline) return -1;
+      if (b.deadline) return 1;
+      return String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+    });
+  }, [tasks, taskFilters]);
+
+  const tasksForSelectedEvidence = useMemo(() => {
+    if (!selected) return [];
+    return getTasksForEvidence(tasks, selected.id);
+  }, [tasks, selected]);
+
+  const taskMetrics = useMemo(() => {
+    const total = tasks.length;
+    const pending = tasks.filter((t) => t.status === '待处理').length;
+    const inProgress = tasks.filter((t) => t.status === '处理中').length;
+    const completed = tasks.filter((t) => t.status === '已完成').length;
+    const overdue = tasks.filter((t) => isTaskOverdue(t)).length;
+    return { total, pending, inProgress, completed, overdue };
+  }, [tasks]);
 
   function isBuiltInIssue(issueName) {
     const builtIn = appConfig.fields.find((f) => f.key === 'issue')?.options || [];
@@ -1603,6 +1833,17 @@ function App() {
                   {appConfig.statuses.map((status) => (
                     <button key={status} type="button" onClick={() => updateStatus(item.id, status)}>{status}</button>
                   ))}
+                  {item.status === '需补强' && !item._masked && (
+                    <button
+                      key="create-task"
+                      type="button"
+                      className="task-btn"
+                      onClick={() => openCreateTaskFromEvidence(records.find((r) => r.id === item.id))}
+                      title="生成补强任务"
+                    >
+                      <AlertTriangle size={14} /> 生成任务
+                    </button>
+                  )}
                   {appConfig.action === 'copyRecipe' && <button type="button" onClick={() => duplicateRecord(records.find((r) => r.id === item.id))}><RotateCcw size={14} />复制</button>}
                   {appConfig.chart && <button type="button" onClick={() => addTemperature(records.find((r) => r.id === item.id))}>加温度</button>}
                   <button className="ghost-danger" type="button" onClick={() => removeRecord(item.id)}><Trash2 size={14} /></button>
@@ -1690,6 +1931,204 @@ function App() {
         )}
       </section>
 
+      <section className="panel strengthen-tasks-panel">
+        <div className="panel-title" style={{ marginBottom: 16 }}>
+          <AlertTriangle size={18} />
+          <h2>证据补强任务</h2>
+          <div className="task-metrics-brief">
+            <span className="tmb tmb-overdue">逾期：{taskMetrics.overdue}</span>
+            <span className="tmb tmb-pending">待处理：{taskMetrics.pending}</span>
+            <span className="tmb tmb-progress">处理中：{taskMetrics.inProgress}</span>
+            <span className="tmb tmb-done">已完成：{taskMetrics.completed}</span>
+            <span className="tmb tmb-total">总计：{taskMetrics.total}</span>
+          </div>
+        </div>
+
+        <div className="task-filter-bar">
+          <div className="task-filter-item">
+            <label><Briefcase size={14} /> 案件</label>
+            <select
+              value={taskFilters.caseName}
+              onChange={(e) => setTaskFilters({ ...taskFilters, caseName: e.target.value })}
+            >
+              <option value="">全部案件</option>
+              {caseNames.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="task-filter-item">
+            <label><Target size={14} /> 争议点</label>
+            <select
+              value={taskFilters.issue}
+              onChange={(e) => setTaskFilters({ ...taskFilters, issue: e.target.value })}
+            >
+              <option value="">全部争议点</option>
+              {taskIssueOptions.length > 0 ? (
+                taskIssueOptions.map((issue) => (
+                  <option key={issue} value={issue}>{issue}</option>
+                ))
+              ) : (
+                (appConfig.fields.find((f) => f.key === 'issue')?.options || []).map((issue) => (
+                  <option key={issue} value={issue}>{issue}</option>
+                ))
+              )}
+            </select>
+          </div>
+          <div className="task-filter-item">
+            <label><AlertCircle size={14} /> 逾期状态</label>
+            <select
+              value={taskFilters.overdueStatus}
+              onChange={(e) => setTaskFilters({ ...taskFilters, overdueStatus: e.target.value })}
+            >
+              <option value="all">全部</option>
+              <option value="overdue">已逾期</option>
+              <option value="not-overdue">未逾期</option>
+            </select>
+          </div>
+          <div className="task-filter-item">
+            <label><CheckCircle2 size={14} /> 处理状态</label>
+            <select
+              value={taskFilters.status}
+              onChange={(e) => setTaskFilters({ ...taskFilters, status: e.target.value })}
+            >
+              <option value="all">全部</option>
+              {TASK_STATUSES.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
+          <button
+            type="button"
+            className="clear-task-filters-btn"
+            onClick={() => setTaskFilters({ caseName: '', issue: '', overdueStatus: 'all', status: 'all' })}
+          >
+            <RotateCcw size={14} /> 重置
+          </button>
+        </div>
+
+        <div className="task-list">
+          {filteredTasks.length > 0 ? (
+            filteredTasks.map((task) => {
+              const overdue = isTaskOverdue(task);
+              const daysLeft = getTaskDaysLeft(task);
+              const statusMeta = TASK_STATUS_META[task.status];
+              return (
+                <div
+                  key={task.id}
+                  className={`task-card ${overdue ? 'overdue' : ''}`}
+                  style={{ borderLeftColor: overdue ? '#dc2626' : statusMeta.color }}
+                >
+                  <div className="task-card-header">
+                    <div className="task-card-title-row">
+                      <h4 className="task-evidence-name">
+                        <FileText size={16} /> {task.evidenceName}
+                      </h4>
+                      <span
+                        className="task-status-chip"
+                        style={{ background: statusMeta.bg, color: statusMeta.color, borderColor: statusMeta.border }}
+                      >
+                        {task.status}
+                      </span>
+                      {overdue && (
+                        <span className="overdue-chip">
+                          <AlertCircle size={12} /> 逾期
+                          {daysLeft !== null ? ` ${Math.abs(daysLeft)} 天` : ''}
+                        </span>
+                      )}
+                      {!overdue && daysLeft !== null && task.status !== '已完成' && task.status !== '已取消' && daysLeft <= 3 && (
+                        <span className="urgent-chip">
+                          <Clock size={12} /> {daysLeft === 0 ? '今日截止' : `剩 ${daysLeft} 天`}
+                        </span>
+                      )}
+                    </div>
+                    <div className="task-card-meta-row">
+                      <span className="task-case-tag">
+                        <Briefcase size={12} /> {task.caseName}
+                      </span>
+                      <span className="task-issue-tag">
+                        <Target size={12} /> {task.issue || '未关联'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="task-card-body">
+                    <div className="task-reason-block">
+                      <span className="task-block-label">补强原因</span>
+                      <p className="task-reason-text">{task.reason}</p>
+                    </div>
+                    <div className="task-info-row">
+                      <div className="task-info-item">
+                        <Briefcase size={14} />
+                        <span className="ti-label">负责人：</span>
+                        <span className="ti-value">{task.assignee}</span>
+                      </div>
+                      <div className="task-info-item">
+                        <CalendarDays size={14} />
+                        <span className="ti-label">截止日期：</span>
+                        <span className={`ti-value ${overdue ? 'overdue-text' : ''}`}>{task.deadline}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="task-card-footer">
+                    <div className="task-status-actions">
+                      {TASK_STATUSES.map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          className={`task-status-btn ${task.status === s ? 'active' : ''}`}
+                          onClick={() => handleTaskStatusChange(task.id, s)}
+                          style={task.status === s ? { background: statusMeta.color, color: '#fff', borderColor: statusMeta.color } : {}}
+                        >
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="task-card-actions">
+                      <button
+                        type="button"
+                        className="task-action-btn edit"
+                        onClick={() => openEditTask(task)}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        className="task-action-btn delete"
+                        onClick={() => handleTaskDelete(task.id)}
+                      >
+                        <Trash2 size={14} /> 删除
+                      </button>
+                      <button
+                        type="button"
+                        className="task-action-btn view-evidence"
+                        onClick={() => {
+                          const ev = records.find((r) => r.id === task.evidenceId);
+                          if (ev) setSelected(ev);
+                        }}
+                      >
+                        <Eye size={14} /> 查看证据
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div className="task-list-empty">
+              <ClipboardList size={48} />
+              <h3>暂无补强任务</h3>
+              <p>
+                {taskFilters.caseName || taskFilters.issue || taskFilters.overdueStatus !== 'all' || taskFilters.status !== 'all'
+                  ? '当前筛选条件下没有匹配的任务，可尝试调整筛选条件'
+                  : '在「需补强」的证据卡片上点击「生成任务」按钮，创建补强待办任务'}
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
+
       <section className="insights">
         <div className="panel">
           <div className="panel-title">
@@ -1745,12 +2184,217 @@ function App() {
                   <span key={index}>{step.at} · {step.status} · {step.by}</span>
                 ))}
               </div>
+
+              {!displaySelected._masked && (
+                <div className="evidence-tasks-section">
+                  <div className="evidence-tasks-header">
+                    <AlertTriangle size={16} />
+                    <span>关联补强任务</span>
+                    {selected.status === '需补强' && (
+                      <button
+                        type="button"
+                        className="add-task-inline-btn"
+                        onClick={() => openCreateTaskFromEvidence(selected)}
+                      >
+                        <Plus size={14} /> 新增
+                      </button>
+                    )}
+                  </div>
+
+                  {tasksForSelectedEvidence.length > 0 ? (
+                    <div className="evidence-tasks-list">
+                      {tasksForSelectedEvidence.map((task) => {
+                        const overdue = isTaskOverdue(task);
+                        const daysLeft = getTaskDaysLeft(task);
+                        const statusMeta = TASK_STATUS_META[task.status];
+                        return (
+                          <div
+                            key={task.id}
+                            className={`evidence-task-card ${overdue ? 'overdue' : ''}`}
+                            style={{ borderColor: overdue ? '#fecaca' : statusMeta.border }}
+                          >
+                            <div className="evidence-task-head">
+                              <span
+                                className="task-status-badge"
+                                style={{ background: statusMeta.color, color: '#fff' }}
+                              >
+                                {task.status}
+                              </span>
+                              {overdue && (
+                                <span className="overdue-tag">
+                                  <AlertCircle size={12} /> 逾期{daysLeft !== null ? ` ${Math.abs(daysLeft)}天` : ''}
+                                </span>
+                              )}
+                              {!overdue && daysLeft !== null && task.status !== '已完成' && task.status !== '已取消' && daysLeft <= 3 && (
+                                <span className="urgent-tag">
+                                  <Clock size={12} /> 剩{daysLeft}天
+                                </span>
+                              )}
+                            </div>
+                            <div className="evidence-task-reason">{task.reason}</div>
+                            <div className="evidence-task-meta">
+                              <span><Briefcase size={12} /> 负责人：{task.assignee}</span>
+                              <span><CalendarDays size={12} /> 截止：{task.deadline}</span>
+                            </div>
+                            <div className="evidence-task-actions">
+                              {TASK_STATUSES.map((s) => (
+                                <button
+                                  key={s}
+                                  type="button"
+                                  className={`mini-status-btn ${task.status === s ? 'active' : ''}`}
+                                  onClick={() => handleTaskStatusChange(task.id, s)}
+                                  style={task.status === s ? { background: TASK_STATUS_META[s].color, color: '#fff', borderColor: TASK_STATUS_META[s].color } : {}}
+                                >
+                                  {s}
+                                </button>
+                              ))}
+                              <button
+                                type="button"
+                                className="mini-edit-btn"
+                                onClick={() => openEditTask(task)}
+                              >
+                                编辑
+                              </button>
+                              <button
+                                type="button"
+                                className="mini-delete-btn"
+                                onClick={() => handleTaskDelete(task.id)}
+                              >
+                                <Trash2 size={12} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="evidence-tasks-empty">
+                      {selected.status === '需补强' ? (
+                        <p>暂无补强任务，点击右上角「新增」创建</p>
+                      ) : (
+                        <p>该证据暂无需补强任务</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <p className="empty">点击任意记录查看详情和状态流转。</p>
           )}
         </aside>
       </section>
+
+      {showTaskModal && (
+        <div className="modal-overlay" onClick={closeTaskModal}>
+          <div className="modal task-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="panel-title" style={{ marginBottom: 0 }}>
+                <AlertTriangle size={18} />
+                <h2>{taskModalMode === 'create' ? '创建证据补强任务' : '编辑补强任务'}</h2>
+              </div>
+              <button type="button" className="icon-btn" onClick={closeTaskModal}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <form className="modal-body" onSubmit={handleTaskFormSubmit}>
+              <div className="task-form-section">
+                <div className="task-form-evidence-info">
+                  <div className="tfei-title">关联证据</div>
+                  <div className="tfei-content">
+                    <div className="tfei-row">
+                      <span className="tfei-label"><FileText size={14} /> 证据材料：</span>
+                      <span className="tfei-value tfei-evidence">{taskForm.evidenceName}</span>
+                    </div>
+                    <div className="tfei-row">
+                      <span className="tfei-label"><Briefcase size={14} /> 案件：</span>
+                      <span className="tfei-value">{taskForm.caseName}</span>
+                    </div>
+                    <div className="tfei-row">
+                      <span className="tfei-label"><Target size={14} /> 争议点：</span>
+                      <span className="tfei-value">{taskForm.issue || '未关联'}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="task-form-grid">
+                  <label className="wide">
+                    <span className="field-label-row">
+                      <span>补强原因 <em className="required-tag">必填</em></span>
+                    </span>
+                    <textarea
+                      value={taskForm.reason || ''}
+                      onChange={(e) => setTaskForm({ ...taskForm, reason: e.target.value })}
+                      placeholder="请详细描述需要补强的原因，如证据链不完整、证明力不足等"
+                      rows={3}
+                    />
+                  </label>
+
+                  <label>
+                    <span className="field-label-row">
+                      <span>负责人 <em className="required-tag">必填</em></span>
+                    </span>
+                    <input
+                      type="text"
+                      value={taskForm.assignee || ''}
+                      onChange={(e) => setTaskForm({ ...taskForm, assignee: e.target.value })}
+                      placeholder="请输入负责人姓名"
+                    />
+                  </label>
+
+                  <label>
+                    <span className="field-label-row">
+                      <span>截止日期 <em className="required-tag">必填</em></span>
+                    </span>
+                    <input
+                      type="date"
+                      value={taskForm.deadline || ''}
+                      onChange={(e) => setTaskForm({ ...taskForm, deadline: e.target.value })}
+                      min={today}
+                    />
+                  </label>
+
+                  {taskModalMode === 'edit' && (
+                    <label className="wide">
+                      <span className="field-label-row">
+                        <span>处理状态</span>
+                      </span>
+                      <div className="task-status-picker">
+                        {TASK_STATUSES.map((s) => {
+                          const meta = TASK_STATUS_META[s];
+                          return (
+                            <button
+                              key={s}
+                              type="button"
+                              className={`status-picker-btn ${taskForm.status === s ? 'active' : ''}`}
+                              onClick={() => setTaskForm({ ...taskForm, status: s })}
+                              style={taskForm.status === s ? { background: meta.color, color: '#fff', borderColor: meta.color } : {}}
+                            >
+                              {s}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </label>
+                  )}
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="ghost-btn" onClick={closeTaskModal}>取消</button>
+                <button
+                  type="submit"
+                  className="primary"
+                >
+                  <Check size={18} />
+                  {taskModalMode === 'create' ? '创建任务' : '保存修改'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {showImport && (
         <div className="modal-overlay" onClick={closeImport}>
