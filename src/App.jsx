@@ -591,6 +591,55 @@ function App() {
   const [selectedIssueFilter, setSelectedIssueFilter] = useState('');
   const [newIssueInput, setNewIssueInput] = useState('');
   const [issueCoverageFilter, setIssueCoverageFilter] = useState('all');
+  const [viewMode, setViewMode] = useState('机密');
+
+  const VIEW_MODES = [
+    { key: '公开', label: '公开模式', desc: '机密信息脱敏，仅见公开材料', color: '#047857' },
+    { key: '内部', label: '内部模式', desc: '展示公开和内部材料', color: '#2563eb' },
+    { key: '机密', label: '机密模式', desc: '展示全部材料', color: '#dc2626' },
+  ];
+
+  const LEVEL_RANK = { '公开': 0, '内部': 1, '机密': 2 };
+  const MODE_MAX_VISIBLE_LEVEL = { '公开': LEVEL_RANK['公开'], '内部': LEVEL_RANK['内部'], '机密': LEVEL_RANK['机密'] };
+
+  function isRecordMasked(item, mode) {
+    const itemLevel = LEVEL_RANK[item.level] ?? 1;
+    const visibleLevel = MODE_MAX_VISIBLE_LEVEL[mode] ?? 0;
+    return itemLevel > visibleLevel;
+  }
+
+  function maskText(text, type = 'default') {
+    if (!text || !String(text).trim()) return text;
+    const str = String(text);
+    if (str.length <= 2) return '****';
+    if (type === 'purpose') {
+      return str.slice(0, 4) + '****' + (str.length > 8 ? str.slice(-2) : '');
+    }
+    if (type === 'source') {
+      return str.slice(0, 2) + '****';
+    }
+    return str.slice(0, 2) + '****' + str.slice(-2);
+  }
+
+  function applyMaskToRecord(item, mode) {
+    if (!isRecordMasked(item, mode)) return item;
+    return {
+      ...item,
+      evidence: maskText(item.evidence, 'evidence'),
+      source: maskText(item.source, 'source'),
+      purpose: maskText(item.purpose, 'purpose'),
+      _masked: true,
+    };
+  }
+
+  function getProcessedRecords(items, mode) {
+    return items.map((item) => applyMaskToRecord(item, mode));
+  }
+
+  function processSingleRecord(item, mode) {
+    if (!item) return item;
+    return applyMaskToRecord(item, mode);
+  }
 
   function persist(next) {
     setRecords(next);
@@ -746,6 +795,9 @@ function App() {
       });
   }, [records, filters, selectedIssueFilter, selectedCaseName]);
 
+  const displayRecords = useMemo(() => getProcessedRecords(filteredRecords, viewMode), [filteredRecords, viewMode]);
+  const displaySelected = useMemo(() => processSingleRecord(selected, viewMode), [selected, viewMode]);
+
   const metrics = [
     { label: "证据数", value: records.length },
     { label: "案件数", value: new Set(records.map((item) => item.caseName)).size },
@@ -753,20 +805,21 @@ function App() {
   ];
 
   const groupedByDate = useMemo(() => {
-    return filteredRecords.reduce((acc, item) => {
+    return displayRecords.reduce((acc, item) => {
       const key = item[appConfig.dateKey] || item.date || item.enrollDate || '未排期';
       (acc[key] ||= []).push(item);
       return acc;
     }, {});
-  }, [filteredRecords]);
+  }, [displayRecords]);
 
   const directory = useMemo(() => {
-    return records.reduce((acc, item) => {
+    const visibleRecords = getProcessedRecords(records, viewMode);
+    return visibleRecords.reduce((acc, item) => {
       const key = item.issue || '未分类';
       (acc[key] ||= []).push(item);
       return acc;
     }, {});
-  }, [records]);
+  }, [records, viewMode]);
 
   const caseNames = useMemo(() => {
     const names = [...new Set(records.map((item) => item.caseName))];
@@ -864,7 +917,7 @@ function App() {
   const timelineData = useMemo(() => {
     if (!selectedCaseName) return [];
 
-    const caseRecords = filteredRecords.filter(item => item.caseName === selectedCaseName);
+    const caseRecords = displayRecords.filter(item => item.caseName === selectedCaseName);
     const withDate = caseRecords.filter(item => item.date);
     const withoutDate = caseRecords.filter(item => !item.date);
 
@@ -890,7 +943,7 @@ function App() {
     }
 
     return result;
-  }, [filteredRecords, selectedCaseName]);
+  }, [displayRecords, selectedCaseName]);
 
   function openExport() {
     setShowExport(true);
@@ -974,6 +1027,30 @@ function App() {
             <FileText size={18} />
             导出证据目录
           </button>
+        </div>
+      </section>
+
+      <section className="view-mode-bar">
+        <div className="view-mode-label">
+          <Shield size={18} />
+          <span>保密视图</span>
+        </div>
+        <div className="view-mode-switcher">
+          {VIEW_MODES.map((m) => (
+            <button
+              key={m.key}
+              type="button"
+              className={`view-mode-btn ${viewMode === m.key ? 'active' : ''}`}
+              style={viewMode === m.key ? { background: m.color, borderColor: m.color } : {}}
+              onClick={() => setViewMode(m.key)}
+              title={m.desc}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+        <div className="view-mode-desc">
+          {VIEW_MODES.find((m) => m.key === viewMode)?.desc}
         </div>
       </section>
 
@@ -1102,19 +1179,25 @@ function App() {
                 最近录入证据
               </h3>
               <div className="recent-list">
-                {caseOverview.recentEvidence.map((item) => (
-                  <div key={item.id} className="recent-item" onClick={() => setSelected(item)}>
-                    <div className="recent-main">
-                      <span className="recent-title">{item.evidence}</span>
-                      <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                {caseOverview.recentEvidence.map((item) => {
+                  const masked = applyMaskToRecord(item, viewMode);
+                  return (
+                    <div key={item.id} className={`recent-item ${masked._masked ? 'masked-record' : ''}`} onClick={() => setSelected(item)}>
+                      <div className="recent-main">
+                        <span className="recent-title">
+                          {masked.evidence}
+                          {masked._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+                        </span>
+                        <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                      </div>
+                      <div className="recent-meta">
+                        <span>{item.issue}</span>
+                        <span>·</span>
+                        <span>{item.date || item.createdAt?.slice(0, 10) || '未设置日期'}</span>
+                      </div>
                     </div>
-                    <div className="recent-meta">
-                      <span>{item.issue}</span>
-                      <span>·</span>
-                      <span>{item.date || item.createdAt?.slice(0, 10) || '未设置日期'}</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </>
@@ -1329,18 +1412,21 @@ function App() {
                               关联证据（{issue.records.length}）
                             </div>
                             <div className="issue-evidence-tags">
-                              {issue.records.slice(0, 5).map((ev) => (
-                                <span
-                                  key={ev.id}
-                                  className={`issue-evidence-tag status ${statusClass(ev.status)}`}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelected(ev);
-                                  }}
-                                >
-                                  {ev.evidence}
-                                </span>
-                              ))}
+                              {issue.records.slice(0, 5).map((ev) => {
+                                const masked = applyMaskToRecord(ev, viewMode);
+                                return (
+                                  <span
+                                    key={ev.id}
+                                    className={`issue-evidence-tag status ${statusClass(ev.status)} ${masked._masked ? 'masked-record' : ''}`}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setSelected(ev);
+                                    }}
+                                  >
+                                    {masked.evidence}
+                                  </span>
+                                );
+                              })}
                               {issue.records.length > 5 && (
                                 <span className="issue-evidence-more">+{issue.records.length - 5} 更多</span>
                               )}
@@ -1494,11 +1580,14 @@ function App() {
           </div>
 
           <div className="records">
-            {filteredRecords.map((item) => (
-              <article className={'record ' + (item.conflict || hasOverlap(item, records) ? 'conflict' : '')} key={item.id} onClick={() => setSelected(item)}>
+            {displayRecords.map((item) => (
+              <article className={'record ' + (item.conflict || hasOverlap(item, records) ? 'conflict' : '') + (item._masked ? ' masked-record' : '')} key={item.id} onClick={() => setSelected(records.find((r) => r.id === item.id))}>
                 <div className="record-head">
                   <div>
-                    <h3>{item.evidence}</h3>
+                    <h3>
+                      {item.evidence}
+                      {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+                    </h3>
                     <p>{`${item.caseName} · ${item.issue} · ${item.level}`}</p>
                   </div>
                   <span className={'status ' + statusClass(item.status)}>{item.status}</span>
@@ -1509,8 +1598,8 @@ function App() {
                   {appConfig.statuses.map((status) => (
                     <button key={status} type="button" onClick={() => updateStatus(item.id, status)}>{status}</button>
                   ))}
-                  {appConfig.action === 'copyRecipe' && <button type="button" onClick={() => duplicateRecord(item)}><RotateCcw size={14} />复制</button>}
-                  {appConfig.chart && <button type="button" onClick={() => addTemperature(item)}>加温度</button>}
+                  {appConfig.action === 'copyRecipe' && <button type="button" onClick={() => duplicateRecord(records.find((r) => r.id === item.id))}><RotateCcw size={14} />复制</button>}
+                  {appConfig.chart && <button type="button" onClick={() => addTemperature(records.find((r) => r.id === item.id))}>加温度</button>}
                   <button className="ghost-danger" type="button" onClick={() => removeRecord(item.id)}><Trash2 size={14} /></button>
                 </div>
               </article>
@@ -1561,11 +1650,14 @@ function App() {
                     {group.items.map((item) => (
                       <div
                         key={item.id}
-                        className={`timeline-node ${selected?.id === item.id ? 'active' : ''}`}
-                        onClick={() => setSelected(item)}
+                        className={`timeline-node ${selected?.id === item.id ? 'active' : ''} ${item._masked ? 'masked-record' : ''}`}
+                        onClick={() => setSelected(records.find((r) => r.id === item.id))}
                       >
                         <div className="timeline-node-head">
-                          <span className="timeline-node-title">{item.evidence}</span>
+                          <span className="timeline-node-title">
+                            {item.evidence}
+                            {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+                          </span>
                           <span className={'status ' + statusClass(item.status)}>{item.status}</span>
                         </div>
                         <div className="timeline-node-meta">
@@ -1604,7 +1696,12 @@ function App() {
               {Object.entries(directory).map(([issue, items]) => (
                 <div key={issue} className="directory-group">
                   <strong>{issue}</strong>
-                  {items.map((item, index) => <span key={item.id}>{index + 1}. {item.evidence}｜{item.purpose}</span>)}
+                  {items.map((item, index) => (
+                    <span key={item.id} className={item._masked ? 'masked-dir-entry' : ''}>
+                      {index + 1}. {item.evidence}｜{item.purpose}
+                      {item._masked && <em className="dir-masked-tag"><Shield size={10} />脱敏</em>}
+                    </span>
+                  ))}
                 </div>
               ))}
             </div>
@@ -1625,11 +1722,14 @@ function App() {
             <CheckCircle2 size={18} />
             <h2>详情</h2>
           </div>
-          {selected ? (
+          {displaySelected ? (
             <div className="detail">
-              <h3>{selected.evidence}</h3>
-              <p>{`${selected.caseName} · ${selected.issue} · ${selected.level}`}</p>
-              <p>{selected.purpose}</p>
+              <h3>
+                {displaySelected.evidence}
+                {displaySelected._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+              </h3>
+              <p>{`${displaySelected.caseName} · ${displaySelected.issue} · ${displaySelected.level}`}</p>
+              <p>{displaySelected.purpose}</p>
               {selected.temps && (
                 <div className="temp-chart">
                   {selected.temps.map((value, index) => <i key={index} style={{ height: Math.max(10, 56 + Number(value) * 8) }} title={String(value)} />)}
