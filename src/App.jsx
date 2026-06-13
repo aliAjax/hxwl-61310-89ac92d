@@ -11,6 +11,7 @@ const appConfig = {
   "icon": "Scale",
   "storage": "hxwl-61310-legal-evidence",
   "templateStorage": "hxwl-61310-purpose-templates",
+  "issueStorage": "hxwl-61310-custom-issues",
   "accent": "#475569",
   "statuses": [
     "待核对",
@@ -253,6 +254,106 @@ function removeCustomTemplate(customTemplates, issue, purpose) {
   return next;
 }
 
+function loadCustomIssues() {
+  const raw = localStorage.getItem(appConfig.issueStorage);
+  if (raw) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function saveCustomIssues(customIssues) {
+  localStorage.setItem(appConfig.issueStorage, JSON.stringify(customIssues));
+}
+
+function addCustomIssue(customIssues, caseName, issue) {
+  const next = { ...customIssues };
+  if (!next[caseName]) {
+    next[caseName] = [];
+  }
+  if (!next[caseName].includes(issue)) {
+    next[caseName] = [...next[caseName], issue];
+  }
+  saveCustomIssues(next);
+  return next;
+}
+
+function removeCustomIssue(customIssues, caseName, issue) {
+  const next = { ...customIssues };
+  if (next[caseName]) {
+    next[caseName] = next[caseName].filter((item) => item !== issue);
+    if (next[caseName].length === 0) {
+      delete next[caseName];
+    }
+  }
+  saveCustomIssues(next);
+  return next;
+}
+
+function getAllIssues(customIssues, caseName, records) {
+  const builtIn = appConfig.fields.find((f) => f.key === 'issue')?.options || [];
+  const custom = customIssues[caseName] || [];
+  const fromRecords = [...new Set(records.filter((r) => r.caseName === caseName).map((r) => r.issue).filter(Boolean))];
+  const merged = [...builtIn];
+  custom.forEach((item) => {
+    if (!merged.includes(item)) merged.push(item);
+  });
+  fromRecords.forEach((item) => {
+    if (!merged.includes(item)) merged.push(item);
+  });
+  return merged;
+}
+
+function computeIssueCoverage(customIssues, caseName, records) {
+  const issues = getAllIssues(customIssues, caseName, records);
+  const caseRecords = records.filter((r) => r.caseName === caseName);
+
+  const result = issues.map((issue) => {
+    const issueRecords = caseRecords.filter((r) => r.issue === issue);
+    const total = issueRecords.length;
+    const pending = issueRecords.filter((r) => r.status === '待核对').length;
+    const verified = issueRecords.filter((r) => r.status === '已核对').length;
+    const needStrengthen = issueRecords.filter((r) => r.status === '需补强').length;
+
+    let coverageStatus;
+    if (total === 0) {
+      coverageStatus = 'none';
+    } else if (needStrengthen > 0) {
+      coverageStatus = 'need-strengthen';
+    } else if (total === pending) {
+      coverageStatus = 'all-pending';
+    } else if (verified > 0) {
+      coverageStatus = 'covered';
+    } else {
+      coverageStatus = 'partial';
+    }
+
+    return {
+      name: issue,
+      total,
+      pending,
+      verified,
+      needStrengthen,
+      records: issueRecords,
+      coverageStatus,
+    };
+  });
+
+  return result;
+}
+
+const COVERAGE_STATUS_META = {
+  'none': { label: '无证据', color: '#dc2626', bg: '#fef2f2', border: '#fecaca', icon: 'alert-circle' },
+  'all-pending': { label: '待核对', color: '#d97706', bg: '#fffbeb', border: '#fde68a', icon: 'clock' },
+  'need-strengthen': { label: '需补强', color: '#b45309', bg: '#fff7ed', border: '#fed7aa', icon: 'alert-triangle' },
+  'covered': { label: '已覆盖', color: '#047857', bg: '#ecfdf3', border: '#a7f3d0', icon: 'check-circle' },
+  'partial': { label: '部分覆盖', color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe', icon: 'info' },
+};
+
 function getAllTemplates(customTemplates) {
   const result = {};
   Object.keys(appConfig.purposeTemplates).forEach((issue) => {
@@ -486,6 +587,10 @@ function App() {
     groupByIssue: true,
   });
   const [showPrintPreview, setShowPrintPreview] = useState(false);
+  const [customIssues, setCustomIssues] = useState(loadCustomIssues);
+  const [selectedIssueFilter, setSelectedIssueFilter] = useState('');
+  const [newIssueInput, setNewIssueInput] = useState('');
+  const [issueCoverageFilter, setIssueCoverageFilter] = useState('all');
 
   function persist(next) {
     setRecords(next);
@@ -626,6 +731,7 @@ function App() {
     return records
       .filter((item) => !filters.query || `${item.caseName}${item.evidence}${item.issue}`.includes(filters.query))
       .filter((item) => filters.status === '全部' || item.status === filters.status)
+      .filter((item) => !selectedIssueFilter || item.issue === selectedIssueFilter)
       .sort((a, b) => {
         if (appConfig.sort === 'priority') {
           const rank = priorityRank(a.priority) - priorityRank(b.priority);
@@ -635,7 +741,7 @@ function App() {
         const bDate = b[appConfig.dateKey] || b.sentAt || b.createdAt || '';
         return String(aDate).localeCompare(String(bDate));
       });
-  }, [records, filters]);
+  }, [records, filters, selectedIssueFilter]);
 
   const metrics = [
     { label: "证据数", value: records.length },
@@ -702,6 +808,55 @@ function App() {
       recentEvidence,
     };
   }, [records, selectedCaseName]);
+
+  const issueCoverageData = useMemo(() => {
+    if (!selectedCaseName) return null;
+    return computeIssueCoverage(customIssues, selectedCaseName, records);
+  }, [records, selectedCaseName, customIssues]);
+
+  const filteredIssueCoverage = useMemo(() => {
+    if (!issueCoverageData) return null;
+    if (issueCoverageFilter === 'all') return issueCoverageData;
+    return issueCoverageData.filter((item) => item.coverageStatus === issueCoverageFilter);
+  }, [issueCoverageData, issueCoverageFilter]);
+
+  const issueCoverageStats = useMemo(() => {
+    if (!issueCoverageData) return null;
+    return {
+      total: issueCoverageData.length,
+      none: issueCoverageData.filter((i) => i.coverageStatus === 'none').length,
+      allPending: issueCoverageData.filter((i) => i.coverageStatus === 'all-pending').length,
+      needStrengthen: issueCoverageData.filter((i) => i.coverageStatus === 'need-strengthen').length,
+      covered: issueCoverageData.filter((i) => i.coverageStatus === 'covered').length,
+      partial: issueCoverageData.filter((i) => i.coverageStatus === 'partial').length,
+    };
+  }, [issueCoverageData]);
+
+  function handleAddCustomIssue() {
+    if (!selectedCaseName || !newIssueInput.trim()) return;
+    const next = addCustomIssue(customIssues, selectedCaseName, newIssueInput.trim());
+    setCustomIssues(next);
+    setNewIssueInput('');
+  }
+
+  function handleRemoveCustomIssue(issueName) {
+    if (!selectedCaseName) return;
+    const next = removeCustomIssue(customIssues, selectedCaseName, issueName);
+    setCustomIssues(next);
+  }
+
+  function isBuiltInIssue(issueName) {
+    const builtIn = appConfig.fields.find((f) => f.key === 'issue')?.options || [];
+    return builtIn.includes(issueName);
+  }
+
+  function handleClickIssue(issueName) {
+    if (selectedIssueFilter === issueName) {
+      setSelectedIssueFilter('');
+    } else {
+      setSelectedIssueFilter(issueName);
+    }
+  }
 
   const timelineData = useMemo(() => {
     if (!selectedCaseName) return [];
@@ -968,6 +1123,254 @@ function App() {
         )}
       </section>
 
+      <section className="panel issue-coverage">
+        <div className="panel-title">
+          <Target size={18} />
+          <h2>争议点覆盖检查</h2>
+          <div className="case-selector">
+            <Briefcase size={16} />
+            <select value={selectedCaseName} onChange={(e) => setSelectedCaseName(e.target.value)}>
+              <option value="">请选择案件</option>
+              {caseNames.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            <ChevronDown size={16} />
+          </div>
+        </div>
+
+        {issueCoverageData ? (
+          <>
+            <div className="coverage-stats">
+              <div className="coverage-stat-card cs-covered" onClick={() => setIssueCoverageFilter(issueCoverageFilter === 'covered' ? 'all' : 'covered')}>
+                <div className="coverage-stat-icon"><CheckCircle2 size={22} /></div>
+                <div>
+                  <span>已覆盖</span>
+                  <strong>{issueCoverageStats.covered}</strong>
+                </div>
+              </div>
+              <div className="coverage-stat-card cs-partial" onClick={() => setIssueCoverageFilter(issueCoverageFilter === 'partial' ? 'all' : 'partial')}>
+                <div className="coverage-stat-icon"><Info size={22} /></div>
+                <div>
+                  <span>部分覆盖</span>
+                  <strong>{issueCoverageStats.partial}</strong>
+                </div>
+              </div>
+              <div className="coverage-stat-card cs-pending" onClick={() => setIssueCoverageFilter(issueCoverageFilter === 'all-pending' ? 'all' : 'all-pending')}>
+                <div className="coverage-stat-icon"><Clock size={22} /></div>
+                <div>
+                  <span>待核对</span>
+                  <strong>{issueCoverageStats.allPending}</strong>
+                </div>
+              </div>
+              <div className="coverage-stat-card cs-strengthen" onClick={() => setIssueCoverageFilter(issueCoverageFilter === 'need-strengthen' ? 'all' : 'need-strengthen')}>
+                <div className="coverage-stat-icon"><AlertTriangle size={22} /></div>
+                <div>
+                  <span>需补强</span>
+                  <strong>{issueCoverageStats.needStrengthen}</strong>
+                </div>
+              </div>
+              <div className="coverage-stat-card cs-none" onClick={() => setIssueCoverageFilter(issueCoverageFilter === 'none' ? 'all' : 'none')}>
+                <div className="coverage-stat-icon"><AlertCircle size={22} /></div>
+                <div>
+                  <span>无证据</span>
+                  <strong>{issueCoverageStats.none}</strong>
+                </div>
+              </div>
+            </div>
+
+            {issueCoverageFilter !== 'all' && (
+              <div className="coverage-filter-badge">
+                <Filter size={12} />
+                正在筛选：{COVERAGE_STATUS_META[issueCoverageFilter]?.label}
+                <button type="button" onClick={() => setIssueCoverageFilter('all')}>
+                  <X size={12} /> 清除
+                </button>
+              </div>
+            )}
+
+            <div className="add-issue-row">
+              <div className="add-issue-input-wrap">
+                <Plus size={16} />
+                <input
+                  type="text"
+                  placeholder="输入自定义争议点名称，回车或点击按钮添加"
+                  value={newIssueInput}
+                  onChange={(e) => setNewIssueInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddCustomIssue();
+                    }
+                  }}
+                />
+              </div>
+              <button
+                type="button"
+                className="primary add-issue-btn"
+                onClick={handleAddCustomIssue}
+                disabled={!newIssueInput.trim()}
+              >
+                <Plus size={16} />
+                新增争议点
+              </button>
+            </div>
+
+            {selectedIssueFilter && (
+              <div className="issue-filter-active-badge">
+                <Target size={14} />
+                已筛选争议点：<strong>{selectedIssueFilter}</strong>
+                <button type="button" onClick={() => setSelectedIssueFilter('')}>
+                  <X size={12} /> 取消筛选
+                </button>
+              </div>
+            )}
+
+            <div className="issue-coverage-list">
+              {filteredIssueCoverage.length > 0 ? (
+                filteredIssueCoverage.map((issue) => {
+                  const meta = COVERAGE_STATUS_META[issue.coverageStatus];
+                  const isActive = selectedIssueFilter === issue.name;
+                  return (
+                    <div
+                      key={issue.name}
+                      className={`issue-coverage-card ${isActive ? 'active' : ''}`}
+                      style={{ borderColor: meta.border, background: meta.bg }}
+                      onClick={() => handleClickIssue(issue.name)}
+                    >
+                      <div className="issue-card-head">
+                        <div className="issue-card-title">
+                          <span
+                            className="coverage-indicator"
+                            style={{ background: meta.color }}
+                          />
+                          <h3 style={{ color: meta.color }}>{issue.name}</h3>
+                          {!isBuiltInIssue(issue.name) && (
+                            <button
+                              type="button"
+                              className="remove-issue-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleRemoveCustomIssue(issue.name);
+                              }}
+                              title="删除此自定义争议点"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          )}
+                        </div>
+                        <span className="coverage-badge" style={{ background: meta.color, color: '#fff' }}>
+                          {meta.label}
+                        </span>
+                      </div>
+
+                      <div className="issue-card-body">
+                        <div className="issue-counts">
+                          <div className="issue-count">
+                            <span className="ic-label">证据总数</span>
+                            <strong className="ic-value">{issue.total}</strong>
+                          </div>
+                          <div className="issue-count">
+                            <span className="ic-label">已核对</span>
+                            <strong className="ic-value" style={{ color: '#047857' }}>{issue.verified}</strong>
+                          </div>
+                          <div className="issue-count">
+                            <span className="ic-label">待核对</span>
+                            <strong className="ic-value" style={{ color: '#d97706' }}>{issue.pending}</strong>
+                          </div>
+                          <div className="issue-count">
+                            <span className="ic-label">需补强</span>
+                            <strong className="ic-value" style={{ color: '#b45309' }}>{issue.needStrengthen}</strong>
+                          </div>
+                        </div>
+
+                        <div className="issue-progress">
+                          <div className="issue-progress-bar">
+                            {issue.total > 0 && (
+                              <>
+                                {issue.verified > 0 && (
+                                  <div
+                                    className="progress-segment ps-verified"
+                                    style={{ width: `${(issue.verified / issue.total) * 100}%` }}
+                                    title={`已核对 ${issue.verified} 份`}
+                                  />
+                                )}
+                                {issue.pending > 0 && (
+                                  <div
+                                    className="progress-segment ps-pending"
+                                    style={{ width: `${(issue.pending / issue.total) * 100}%` }}
+                                    title={`待核对 ${issue.pending} 份`}
+                                  />
+                                )}
+                                {issue.needStrengthen > 0 && (
+                                  <div
+                                    className="progress-segment ps-strengthen"
+                                    style={{ width: `${(issue.needStrengthen / issue.total) * 100}%` }}
+                                    title={`需补强 ${issue.needStrengthen} 份`}
+                                  />
+                                )}
+                              </>
+                            )}
+                          </div>
+                          <div className="progress-legend">
+                            <span><i className="legend-dot ld-verified" />已核对</span>
+                            <span><i className="legend-dot ld-pending" />待核对</span>
+                            <span><i className="legend-dot ld-strengthen" />需补强</span>
+                          </div>
+                        </div>
+
+                        {issue.records.length > 0 && (
+                          <div className="issue-evidence-preview">
+                            <div className="issue-evidence-title">
+                              <FileText size={12} />
+                              关联证据（{issue.records.length}）
+                            </div>
+                            <div className="issue-evidence-tags">
+                              {issue.records.slice(0, 5).map((ev) => (
+                                <span
+                                  key={ev.id}
+                                  className={`issue-evidence-tag status ${statusClass(ev.status)}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelected(ev);
+                                  }}
+                                >
+                                  {ev.evidence}
+                                </span>
+                              ))}
+                              {issue.records.length > 5 && (
+                                <span className="issue-evidence-more">+{issue.records.length - 5} 更多</span>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {issue.coverageStatus === 'none' && (
+                          <div className="issue-empty-hint">
+                            <AlertCircle size={14} />
+                            该争议点暂无证据材料，请尽快补充相关证据
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="coverage-empty">
+                  <Target size={36} />
+                  <p>当前筛选条件下没有匹配的争议点</p>
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div className="overview-empty">
+            <Target size={40} />
+            <p>请从上方选择一个案件，查看该案件的争议点证据覆盖情况</p>
+          </div>
+        )}
+      </section>
+
       <section className="workspace">
         <form className="panel form-panel" onSubmit={addRecord}>
           <div className="panel-title">
@@ -1050,7 +1453,10 @@ function App() {
                     <textarea value={form[field.key] || ''} onChange={(event) => setForm({ ...form, [field.key]: event.target.value })} placeholder={field.placeholder} />
                   ) : field.type === 'select' ? (
                     <select value={form[field.key] || ''} onChange={(event) => setForm({ ...form, [field.key]: event.target.value })}>
-                      {field.options.map((option) => <option key={option}>{option}</option>)}
+                      {(field.key === 'issue' && form.caseName
+                        ? getAllIssues(customIssues, form.caseName, records)
+                        : field.options
+                      ).map((option) => <option key={option}>{option}</option>)}
                     </select>
                   ) : (
                     <input type={field.type} value={form[field.key] || ''} onChange={(event) => setForm({ ...form, [field.key]: event.target.value })} placeholder={field.placeholder} />
