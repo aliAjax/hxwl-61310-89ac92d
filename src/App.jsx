@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, ChevronUp, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight, ArrowRightLeft, Database, History, Download, Star, Settings } from 'lucide-react';
+import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, ChevronUp, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight, ArrowRightLeft, Database, History, Download, Star, Settings, Link2, ArrowLeft } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -737,6 +737,206 @@ function getTasksForEvidence(tasks, evidenceId) {
   return tasks.filter((task) => task.evidenceId === evidenceId);
 }
 
+function getTasksForIssue(tasks, caseName, issue) {
+  return tasks.filter((task) => task.caseName === caseName && task.issue === issue);
+}
+
+function getTaskType(task) {
+  return task.taskType || (task.evidenceId ? 'evidence' : 'issue');
+}
+
+function getTaskSourceLabel(task) {
+  const ctx = task.sourceContext;
+  if (!ctx) return '无上下文';
+  const sourceMap = {
+    'evidence': '证据详情',
+    'coverage': '争议点覆盖',
+    'workbench-coverage': '工作台-争议点覆盖',
+    'board-case': '案件看板',
+    'board-issue': '争议点看板',
+  };
+  return sourceMap[ctx.source] || ctx.source || '未知来源';
+}
+
+function buildCaseTaskBoard(tasks, records, customIssues) {
+  const caseMap = {};
+  tasks.forEach((task) => {
+    const cname = task.caseName;
+    if (!cname) return;
+    if (!caseMap[cname]) {
+      caseMap[cname] = {
+        caseName: cname,
+        total: 0,
+        pending: 0,
+        inProgress: 0,
+        completed: 0,
+        cancelled: 0,
+        overdue: 0,
+        issues: {},
+        assignees: {},
+      };
+    }
+    const cb = caseMap[cname];
+    cb.total += 1;
+    if (task.status === '待处理') cb.pending += 1;
+    else if (task.status === '处理中') cb.inProgress += 1;
+    else if (task.status === '已完成') cb.completed += 1;
+    else if (task.status === '已取消') cb.cancelled += 1;
+    if (isTaskOverdue(task)) cb.overdue += 1;
+
+    const issueName = task.issue || '未分类';
+    if (!cb.issues[issueName]) {
+      cb.issues[issueName] = {
+        name: issueName,
+        total: 0,
+        pending: 0,
+        inProgress: 0,
+        completed: 0,
+        cancelled: 0,
+        overdue: 0,
+        tasks: [],
+      };
+    }
+    cb.issues[issueName].total += 1;
+    if (task.status === '待处理') cb.issues[issueName].pending += 1;
+    else if (task.status === '处理中') cb.issues[issueName].inProgress += 1;
+    else if (task.status === '已完成') cb.issues[issueName].completed += 1;
+    else if (task.status === '已取消') cb.issues[issueName].cancelled += 1;
+    if (isTaskOverdue(task)) cb.issues[issueName].overdue += 1;
+    cb.issues[issueName].tasks.push(task);
+
+    const assignee = task.assignee || '未分配';
+    if (!cb.assignees[assignee]) {
+      cb.assignees[assignee] = { name: assignee, total: 0, overdue: 0, pending: 0, inProgress: 0, completed: 0 };
+    }
+    cb.assignees[assignee].total += 1;
+    if (isTaskOverdue(task)) cb.assignees[assignee].overdue += 1;
+    if (task.status === '待处理') cb.assignees[assignee].pending += 1;
+    else if (task.status === '处理中') cb.assignees[assignee].inProgress += 1;
+    else if (task.status === '已完成') cb.assignees[assignee].completed += 1;
+  });
+
+  const caseList = Object.values(caseMap).map((c) => ({
+    ...c,
+    issues: Object.values(c.issues).sort((a, b) => b.total - a.total),
+    assignees: Object.values(c.assignees).sort((a, b) => b.total - a.total),
+  }));
+
+  return caseList;
+}
+
+function buildIssueTaskBoard(tasks, records, customIssues) {
+  const issueMap = {};
+  tasks.forEach((task) => {
+    const issueName = task.issue || '未分类';
+    if (!issueMap[issueName]) {
+      issueMap[issueName] = {
+        name: issueName,
+        total: 0,
+        pending: 0,
+        inProgress: 0,
+        completed: 0,
+        cancelled: 0,
+        overdue: 0,
+        cases: {},
+        assignees: {},
+        tasks: [],
+      };
+    }
+    const ib = issueMap[issueName];
+    ib.total += 1;
+    if (task.status === '待处理') ib.pending += 1;
+    else if (task.status === '处理中') ib.inProgress += 1;
+    else if (task.status === '已完成') ib.completed += 1;
+    else if (task.status === '已取消') ib.cancelled += 1;
+    if (isTaskOverdue(task)) ib.overdue += 1;
+    ib.tasks.push(task);
+
+    const caseName = task.caseName || '未分类案件';
+    if (!ib.cases[caseName]) {
+      ib.cases[caseName] = { name: caseName, total: 0, overdue: 0, pending: 0, inProgress: 0, completed: 0, tasks: [] };
+    }
+    ib.cases[caseName].total += 1;
+    if (isTaskOverdue(task)) ib.cases[caseName].overdue += 1;
+    if (task.status === '待处理') ib.cases[caseName].pending += 1;
+    else if (task.status === '处理中') ib.cases[caseName].inProgress += 1;
+    else if (task.status === '已完成') ib.cases[caseName].completed += 1;
+    ib.cases[caseName].tasks.push(task);
+
+    const assignee = task.assignee || '未分配';
+    if (!ib.assignees[assignee]) {
+      ib.assignees[assignee] = { name: assignee, total: 0, overdue: 0 };
+    }
+    ib.assignees[assignee].total += 1;
+    if (isTaskOverdue(task)) ib.assignees[assignee].overdue += 1;
+  });
+
+  const issueList = Object.values(issueMap).map((i) => ({
+    ...i,
+    cases: Object.values(i.cases).sort((a, b) => b.total - a.total),
+    assignees: Object.values(i.assignees).sort((a, b) => b.total - a.total),
+  })).sort((a, b) => b.total - a.total);
+
+  return issueList;
+}
+
+function buildAssigneeTaskBoard(tasks, records, customIssues) {
+  const assigneeMap = {};
+  tasks.forEach((task) => {
+    const assignee = task.assignee || '未分配';
+    if (!assigneeMap[assignee]) {
+      assigneeMap[assignee] = {
+        name: assignee,
+        total: 0,
+        pending: 0,
+        inProgress: 0,
+        completed: 0,
+        cancelled: 0,
+        overdue: 0,
+        cases: {},
+        issues: {},
+        tasks: [],
+      };
+    }
+    const ab = assigneeMap[assignee];
+    ab.total += 1;
+    if (task.status === '待处理') ab.pending += 1;
+    else if (task.status === '处理中') ab.inProgress += 1;
+    else if (task.status === '已完成') ab.completed += 1;
+    else if (task.status === '已取消') ab.cancelled += 1;
+    if (isTaskOverdue(task)) ab.overdue += 1;
+    ab.tasks.push(task);
+
+    const caseName = task.caseName || '未分类案件';
+    if (!ab.cases[caseName]) {
+      ab.cases[caseName] = { name: caseName, total: 0, overdue: 0, pending: 0, inProgress: 0, completed: 0 };
+    }
+    ab.cases[caseName].total += 1;
+    if (isTaskOverdue(task)) ab.cases[caseName].overdue += 1;
+    if (task.status === '待处理') ab.cases[caseName].pending += 1;
+    else if (task.status === '处理中') ab.cases[caseName].inProgress += 1;
+    else if (task.status === '已完成') ab.cases[caseName].completed += 1;
+
+    const issueName = task.issue || '未分类';
+    if (!ab.issues[issueName]) {
+      ab.issues[issueName] = { name: issueName, total: 0, overdue: 0 };
+    }
+    ab.issues[issueName].total += 1;
+    if (isTaskOverdue(task)) ab.issues[issueName].overdue += 1;
+  });
+
+  const assigneeList = Object.values(assigneeMap).map((a) => ({
+    ...a,
+    cases: Object.values(a.cases).sort((a, b) => b.total - a.total),
+    issues: Object.values(a.issues).sort((a, b) => b.total - a.total),
+  })).sort((a, b) => {
+    if (b.overdue !== a.overdue) return b.overdue - a.overdue;
+    return b.total - a.total;
+  });
+
+  return assigneeList;
+}
+
 function getAllIssues(customIssues, caseName, records) {
   const builtIn = appConfig.fields.find((f) => f.key === 'issue')?.options || [];
   const custom = customIssues[caseName] || [];
@@ -1070,7 +1270,7 @@ function App() {
   const [showExport, setShowExport] = useState(false);
   const [exportConfig, setExportConfig] = useState({
     caseName: '',
-    hideConfidential: false,
+    exportLevel: '机密',
     groupByIssue: true,
   });
   const [showPrintPreview, setShowPrintPreview] = useState(false);
@@ -1091,6 +1291,7 @@ function App() {
     assignee: '',
     deadline: '',
     status: TASK_PRIMARY_STATUS,
+    taskType: 'evidence',
   });
   const [taskFilters, setTaskFilters] = useState({
     caseName: '',
@@ -1101,6 +1302,12 @@ function App() {
   const [editingTaskId, setEditingTaskId] = useState(null);
   const [workbenchCase, setWorkbenchCase] = useState('');
   const [workbenchTab, setWorkbenchTab] = useState('evidence');
+  const [boardExpandedCases, setBoardExpandedCases] = useState({});
+  const [boardExpandedIssues, setBoardExpandedIssues] = useState({});
+  const [boardExpandedIssueCases, setBoardExpandedIssueCases] = useState({});
+  const [boardExpandedAssignees, setBoardExpandedAssignees] = useState({});
+  const [boardExpandedAssigneeCases, setBoardExpandedAssigneeCases] = useState({});
+  const [boardExpandedAssigneeIssues, setBoardExpandedAssigneeIssues] = useState({});
   const [showDataMgmt, setShowDataMgmt] = useState(false);
   const [dataMgmtTab, setDataMgmtTab] = useState('version');
   const [backupImportText, setBackupImportText] = useState('');
@@ -1108,6 +1315,12 @@ function App() {
   const [showEvidencePicker, setShowEvidencePicker] = useState(false);
   const [evidencePickerSearch, setEvidencePickerSearch] = useState('');
   const [rollbackStatus, setRollbackStatus] = useState(null);
+  const [taskViewMode, setTaskViewMode] = useState('list');
+  const [boardGroupBy, setBoardGroupBy] = useState('case');
+  const [boardFilterOverdue, setBoardFilterOverdue] = useState(false);
+  const [taskContext, setTaskContext] = useState(null);
+  const [selectedTaskId, setSelectedTaskId] = useState(null);
+  const [multiEvidenceIds, setMultiEvidenceIds] = useState([]);
 
   const DATA_MGMT_TABS = [
     { key: 'version', label: '版本信息', icon: Database },
@@ -1505,6 +1718,7 @@ function App() {
   function openCreateTaskFromEvidence(evidence) {
     setTaskForm({
       evidenceId: evidence.id,
+      evidenceIds: [evidence.id],
       caseName: evidence.caseName,
       evidenceName: evidence.evidence,
       issue: evidence.issue,
@@ -1512,15 +1726,44 @@ function App() {
       assignee: '',
       deadline: '',
       status: TASK_PRIMARY_STATUS,
+      taskType: 'evidence',
     });
     setTaskModalMode('create');
     setEditingTaskId(null);
+    setTaskContext({ source: 'evidence', evidenceId: evidence.id, caseName: evidence.caseName, issue: evidence.issue });
+    setMultiEvidenceIds([evidence.id]);
+    setShowTaskModal(true);
+  }
+
+  function openCreateTaskFromIssue(caseName, issue, sourceTab) {
+    const issueRecords = records.filter((r) => r.caseName === caseName && r.issue === issue);
+    const strengthenRecords = issueRecords.filter((r) => r.status === '需补强');
+    const primaryEvidence = strengthenRecords[0] || issueRecords[0];
+    const defaultReason = issueRecords.length === 0 ? `争议点「${issue}」尚无任何证据材料，需补充证据` : `争议点「${issue}」存在${strengthenRecords.length}项需补强证据，需进一步补强`;
+    const evIds = strengthenRecords.length > 0 ? strengthenRecords.map((r) => r.id) : (primaryEvidence ? [primaryEvidence.id] : []);
+    setTaskForm({
+      evidenceId: primaryEvidence?.id || '',
+      evidenceIds: evIds,
+      caseName,
+      evidenceName: primaryEvidence?.evidence || '',
+      issue,
+      reason: defaultReason,
+      assignee: '',
+      deadline: '',
+      status: TASK_PRIMARY_STATUS,
+      taskType: 'issue',
+    });
+    setTaskModalMode('create');
+    setEditingTaskId(null);
+    setTaskContext({ source: sourceTab || 'coverage', caseName, issue, evidenceId: primaryEvidence?.id || '' });
+    setMultiEvidenceIds(evIds);
     setShowTaskModal(true);
   }
 
   function openEditTask(task) {
     setTaskForm({
       evidenceId: task.evidenceId,
+      evidenceIds: task.evidenceIds || (task.evidenceId ? [task.evidenceId] : []),
       caseName: task.caseName,
       evidenceName: task.evidenceName,
       issue: task.issue,
@@ -1528,9 +1771,12 @@ function App() {
       assignee: task.assignee,
       deadline: task.deadline,
       status: task.status,
+      taskType: task.taskType || (task.evidenceId ? 'evidence' : 'issue'),
     });
     setTaskModalMode('edit');
     setEditingTaskId(task.id);
+    setTaskContext(task.sourceContext || null);
+    setMultiEvidenceIds(task.evidenceIds || (task.evidenceId ? [task.evidenceId] : []));
     setShowTaskModal(true);
   }
 
@@ -1540,6 +1786,7 @@ function App() {
     setEditingTaskId(null);
     setTaskForm({
       evidenceId: '',
+      evidenceIds: [],
       caseName: '',
       evidenceName: '',
       issue: '',
@@ -1547,23 +1794,74 @@ function App() {
       assignee: '',
       deadline: '',
       status: TASK_PRIMARY_STATUS,
+      taskType: 'evidence',
     });
+    setTaskContext(null);
+    setMultiEvidenceIds([]);
   }
 
   function handleTaskFormSubmit(event) {
     event.preventDefault();
-    if (!taskForm.evidenceId || !taskForm.reason.trim() || !taskForm.assignee.trim() || !taskForm.deadline) {
+    if (taskForm.taskType === 'issue' && (!taskForm.caseName || !taskForm.issue || !taskForm.reason.trim() || !taskForm.assignee.trim() || !taskForm.deadline)) {
+      alert('请填写完整的任务信息（案件、争议点、补强原因、负责人、截止日期为必填）');
+      return;
+    }
+    if (taskForm.taskType === 'evidence' && (!taskForm.evidenceId || !taskForm.reason.trim() || !taskForm.assignee.trim() || !taskForm.deadline)) {
       alert('请填写完整的任务信息（补强原因、负责人、截止日期为必填）');
       return;
     }
     if (taskModalMode === 'create') {
-      const next = addTask(tasks, { ...taskForm });
+      const next = addTask(tasks, { ...taskForm, evidenceIds: multiEvidenceIds, sourceContext: taskContext });
       setTasks(next);
+      if (taskContext) {
+        setSelectedTaskId(next[0].id);
+      }
     } else if (taskModalMode === 'edit' && editingTaskId) {
-      const next = updateTask(tasks, editingTaskId, { ...taskForm });
+      const next = updateTask(tasks, editingTaskId, { ...taskForm, evidenceIds: multiEvidenceIds, sourceContext: taskContext });
       setTasks(next);
     }
     closeTaskModal();
+  }
+
+  function navigateToTaskContext(task) {
+    const ctx = task.sourceContext;
+    const caseName = ctx?.caseName || task.caseName;
+    const evidenceId = ctx?.evidenceId || task.evidenceId;
+    const issue = ctx?.issue || task.issue;
+
+    if (caseName) {
+      setSelectedCaseName(caseName);
+      setWorkbenchCase(caseName);
+    }
+
+    if (evidenceId) {
+      const ev = records.find((r) => r.id === evidenceId);
+      if (ev) setSelected(ev);
+    }
+
+    if (!ctx) {
+      if (caseName) {
+        setWorkbenchTab('coverage');
+      }
+      return;
+    }
+
+    if (ctx.source === 'coverage' || ctx.source === 'workbench-coverage') {
+      setWorkbenchTab('coverage');
+    } else if (ctx.source === 'board-case' || ctx.source === 'board-issue') {
+      setWorkbenchTab('tasks');
+      setTaskViewMode('board');
+      if (ctx.source === 'board-case') {
+        setBoardGroupBy('case');
+      } else {
+        setBoardGroupBy('issue');
+      }
+    } else if (ctx.source === 'evidence') {
+      if (evidenceId) {
+        const ev = records.find((r) => r.id === evidenceId);
+        if (ev) setSelected(ev);
+      }
+    }
   }
 
   function handleTaskStatusChange(taskId, newStatus) {
@@ -1632,6 +1930,25 @@ function App() {
     return { total, pending, inProgress, completed, overdue };
   }, [tasks]);
 
+  const caseTaskBoard = useMemo(() => buildCaseTaskBoard(tasks, records, customIssues), [tasks, records, customIssues]);
+  const issueTaskBoard = useMemo(() => buildIssueTaskBoard(tasks, records, customIssues), [tasks, records, customIssues]);
+  const assigneeTaskBoard = useMemo(() => buildAssigneeTaskBoard(tasks, records, customIssues), [tasks, records, customIssues]);
+
+  const filteredBoardTasks = useMemo(() => {
+    if (!boardFilterOverdue) return tasks;
+    return tasks.filter((t) => isTaskOverdue(t));
+  }, [tasks, boardFilterOverdue]);
+
+  const filteredCaseBoard = useMemo(() => buildCaseTaskBoard(filteredBoardTasks, records, customIssues), [filteredBoardTasks, records, customIssues]);
+  const filteredIssueBoard = useMemo(() => buildIssueTaskBoard(filteredBoardTasks, records, customIssues), [filteredBoardTasks, records, customIssues]);
+  const filteredAssigneeBoard = useMemo(() => buildAssigneeTaskBoard(filteredBoardTasks, records, customIssues), [filteredBoardTasks, records, customIssues]);
+
+  const allAssignees = useMemo(() => {
+    const assignees = new Set();
+    tasks.forEach((t) => { if (t.assignee) assignees.add(t.assignee); });
+    return [...assignees];
+  }, [tasks]);
+
   const wbRecords = useMemo(() => {
     if (!workbenchCase) return [];
     return records.filter((r) => r.caseName === workbenchCase);
@@ -1685,18 +2002,18 @@ function App() {
 
   const wbExportData = useMemo(() => {
     if (!workbenchCase) return [];
-    return wbFilteredRecords;
-  }, [wbFilteredRecords, workbenchCase]);
+    return getProcessedRecords(wbFilteredRecords, exportConfig.exportLevel);
+  }, [wbFilteredRecords, workbenchCase, exportConfig.exportLevel]);
 
   const wbDirectory = useMemo(() => {
     if (!workbenchCase) return {};
-    const visibleRecords = wbFilteredDisplayRecords;
+    const visibleRecords = wbExportData;
     return visibleRecords.reduce((acc, item) => {
       const key = item.issue || '未分类';
       (acc[key] ||= []).push(item);
       return acc;
     }, {});
-  }, [wbFilteredDisplayRecords, workbenchCase]);
+  }, [wbExportData, workbenchCase]);
 
   const wbStats = useMemo(() => {
     if (!workbenchCase) return null;
@@ -1903,7 +2220,7 @@ function App() {
     setShowExport(true);
     setExportConfig({
       caseName: '',
-      hideConfidential: false,
+      exportLevel: '机密',
       groupByIssue: true,
       ...initialConfig,
     });
@@ -1922,11 +2239,7 @@ function App() {
       data = data.filter((item) => item.caseName === exportConfig.caseName);
     }
 
-    if (exportConfig.hideConfidential) {
-      data = data.filter((item) => item.level !== '机密');
-    }
-
-    return data;
+    return getProcessedRecords(data, exportConfig.exportLevel);
   }, [records, exportConfig]);
 
   const groupedExportData = useMemo(() => {
@@ -1954,9 +2267,12 @@ function App() {
     const total = exportData.length;
     const cases = new Set(exportData.map((item) => item.caseName)).size;
     const issues = new Set(exportData.map((item) => item.issue)).size;
-    const confidentialCount = exportData.filter((item) => item.level === '机密').length;
+    const currentLevelRank = LEVEL_RANK[exportConfig.exportLevel] ?? 0;
+    const confidentialCount = currentLevelRank >= LEVEL_RANK['机密']
+      ? exportData.filter((item) => item.level === '机密').length
+      : 0;
     return { total, cases, issues, confidentialCount };
-  }, [exportData]);
+  }, [exportData, exportConfig.exportLevel]);
 
   function handlePrint() {
     setShowPrintPreview(true);
@@ -2319,6 +2635,16 @@ function App() {
                                 <div className="issue-empty-hint">
                                   <AlertCircle size={14} />
                                   该争议点暂无证据材料，请尽快补充
+                                  <button type="button" className="create-task-from-issue-btn" onClick={(e) => { e.stopPropagation(); openCreateTaskFromIssue(workbenchCase, issue.name, 'workbench-coverage'); }}>
+                                    <AlertTriangle size={14} /> 创建补强任务
+                                  </button>
+                                </div>
+                              )}
+                              {issue.coverageStatus === 'need-strengthen' && (
+                                <div className="issue-task-create-row">
+                                  <button type="button" className="create-task-from-issue-btn" onClick={(e) => { e.stopPropagation(); openCreateTaskFromIssue(workbenchCase, issue.name, 'workbench-coverage'); }}>
+                                    <AlertTriangle size={14} /> 创建补强任务
+                                  </button>
                                 </div>
                               )}
                             </div>
@@ -2384,11 +2710,20 @@ function App() {
                         const overdue = isTaskOverdue(task);
                         const daysLeft = getTaskDaysLeft(task);
                         const statusMeta = TASK_STATUS_META[task.status];
+                        const taskType = getTaskType(task);
+                        const hasContext = task.sourceContext || task.caseName || task.evidenceId;
+                        const sourceLabel = getTaskSourceLabel(task);
                         return (
-                          <div key={task.id} className={`task-card ${overdue ? 'overdue' : ''}`} style={{ borderLeftColor: overdue ? '#dc2626' : statusMeta.color }}>
+                          <div key={task.id} className={`task-card ${overdue ? 'overdue' : ''} ${hasContext ? 'clickable' : ''}`} style={{ borderLeftColor: overdue ? '#dc2626' : statusMeta.color }} onClick={hasContext ? () => navigateToTaskContext(task) : undefined}>
                             <div className="task-card-header">
                               <div className="task-card-title-row">
-                                <h4 className="task-evidence-name"><FileText size={16} /> {task.evidenceName}</h4>
+                                <h4 className="task-evidence-name">
+                                  {taskType === 'issue' ? <Target size={16} /> : <FileText size={16} />}
+                                  <span className="task-type-tag" style={{ background: taskType === 'issue' ? '#fff7ed' : '#eff6ff', color: taskType === 'issue' ? '#b45309' : '#2563eb', borderColor: taskType === 'issue' ? '#fed7aa' : '#bfdbfe' }}>
+                                    {taskType === 'issue' ? '争议点级' : '证据级'}
+                                  </span>
+                                  {task.evidenceName || task.issue}
+                                </h4>
                                 <span className="task-status-chip" style={{ background: statusMeta.bg, color: statusMeta.color, borderColor: statusMeta.border }}>{task.status}</span>
                                 {overdue && (
                                   <span className="overdue-chip"><AlertCircle size={12} /> 逾期{daysLeft !== null ? ` ${Math.abs(daysLeft)} 天` : ''}</span>
@@ -2399,6 +2734,10 @@ function App() {
                               </div>
                               <div className="task-card-meta-row">
                                 <span className="task-issue-tag"><Target size={12} /> {task.issue || '未关联'}</span>
+                                <span className="task-source-tag"><History size={10} /> 来源：{sourceLabel}</span>
+                                {hasContext && (
+                                  <span className="task-context-hint"><Link2 size={10} /> 点击跳转</span>
+                                )}
                               </div>
                             </div>
                             <div className="task-card-body">
@@ -2411,7 +2750,7 @@ function App() {
                                 <div className="task-info-item"><CalendarDays size={14} /><span className="ti-label">截止日期：</span><span className={`ti-value ${overdue ? 'overdue-text' : ''}`}>{task.deadline}</span></div>
                               </div>
                             </div>
-                            <div className="task-card-footer">
+                            <div className="task-card-footer" onClick={(e) => e.stopPropagation()}>
                               <div className="task-status-actions">
                                 {TASK_STATUSES.map((s) => (
                                   <button key={s} type="button" className={`task-status-btn ${task.status === s ? 'active' : ''}`} onClick={() => handleTaskStatusChange(task.id, s)} style={task.status === s ? { background: statusMeta.color, color: '#fff', borderColor: statusMeta.color } : {}}>{s}</button>
@@ -2420,6 +2759,16 @@ function App() {
                               <div className="task-card-actions">
                                 <button type="button" className="task-action-btn edit" onClick={() => openEditTask(task)}>编辑</button>
                                 <button type="button" className="task-action-btn delete" onClick={() => handleTaskDelete(task.id)}><Trash2 size={14} /> 删除</button>
+                                {task.evidenceId && (
+                                  <button type="button" className="task-action-btn view-evidence" onClick={() => {
+                                    const ev = records.find((r) => r.id === task.evidenceId);
+                                    if (ev) setSelected(ev);
+                                  }}><Eye size={14} /> 查看证据</button>
+                                )}
+                                {hasContext && (
+                                  <button type="button" className="task-action-btn goto-context" onClick={() => navigateToTaskContext(task)}><Link2 size={14} /> 跳转上下文</button>
+                                )}
+                                <button type="button" className="task-action-btn goto-coverage" onClick={() => setWorkbenchTab('coverage')}><Target size={14} /> 定位争议点</button>
                               </div>
                             </div>
                           </div>
@@ -2438,9 +2787,17 @@ function App() {
               {workbenchTab === 'export' && (
                 <div className="wb-export-tab">
                   <div className="wb-export-config">
-                    <label className="checkbox-label">
-                      <input type="checkbox" checked={exportConfig.hideConfidential} onChange={(e) => setExportConfig({ ...exportConfig, hideConfidential: e.target.checked })} />
-                      <span>隐藏「机密」材料</span>
+                    <label>
+                      <span style={{ display: 'block', marginBottom: 6, fontSize: 13, color: '#475569', fontWeight: 500 }}><Shield size={13} /> 出卷分级模式</span>
+                      <select
+                        value={exportConfig.exportLevel}
+                        onChange={(e) => setExportConfig({ ...exportConfig, exportLevel: e.target.value })}
+                        className="export-level-select"
+                      >
+                        {VIEW_MODES.map((m) => (
+                          <option key={m.key} value={m.key}>{m.label}</option>
+                        ))}
+                      </select>
                     </label>
                     <label className="checkbox-label">
                       <input type="checkbox" checked={exportConfig.groupByIssue} onChange={(e) => setExportConfig({ ...exportConfig, groupByIssue: e.target.checked })} />
@@ -2450,7 +2807,7 @@ function App() {
                   <div className="wb-export-stats">
                     <div className="summary-stat"><div className="summary-icon info"><FileSpreadsheet size={16} /></div><div><span>证据数</span><strong>{wbExportData.length}</strong></div></div>
                     <div className="summary-stat"><div className="summary-icon ok"><Target size={16} /></div><div><span>争议点</span><strong>{new Set(wbExportData.map((i) => i.issue).filter(Boolean)).size}</strong></div></div>
-                    <div className="summary-stat warning"><div className="summary-icon warn"><Shield size={16} /></div><div><span>机密</span><strong>{wbExportData.filter((i) => i.level === '机密').length}</strong></div></div>
+                    <div className="summary-stat warning"><div className="summary-icon warn"><Shield size={16} /></div><div><span>机密</span><strong>{LEVEL_RANK[exportConfig.exportLevel] >= LEVEL_RANK['机密'] ? wbExportData.filter((i) => i.level === '机密').length : 0}</strong></div></div>
                   </div>
                   {wbExportData.length > 0 ? (
                     <div className="wb-directory-preview">
@@ -2471,7 +2828,10 @@ function App() {
                         <div className="directory-group">
                           <strong>全部证据</strong>
                           {wbExportData.map((item, index) => (
-                            <span key={item.id}>{index + 1}. {item.evidence}｜{item.purpose}</span>
+                            <span key={item.id} className={item._masked ? 'masked-dir-entry' : ''}>
+                              {index + 1}. {item.evidence}｜{item.purpose}
+                              {item._masked && <em className="dir-masked-tag"><Shield size={10} />脱敏</em>}
+                            </span>
                           ))}
                         </div>
                       )}
@@ -2482,7 +2842,7 @@ function App() {
                   <div className="wb-export-actions">
                     <button type="button" className="primary" onClick={() => openExport({
                       caseName: workbenchCase,
-                      hideConfidential: exportConfig.hideConfidential,
+                      exportLevel: exportConfig.exportLevel,
                       groupByIssue: exportConfig.groupByIssue,
                     })}>
                       <Printer size={16} /> 打开完整导出预览
@@ -2870,6 +3230,16 @@ function App() {
                           <div className="issue-empty-hint">
                             <AlertCircle size={14} />
                             该争议点暂无证据材料，请尽快补充相关证据
+                            <button type="button" className="create-task-from-issue-btn" onClick={(e) => { e.stopPropagation(); openCreateTaskFromIssue(selectedCaseName, issue.name, 'coverage'); }}>
+                              <AlertTriangle size={14} /> 创建补强任务
+                            </button>
+                          </div>
+                        )}
+                        {issue.coverageStatus === 'need-strengthen' && (
+                          <div className="issue-task-create-row">
+                            <button type="button" className="create-task-from-issue-btn" onClick={(e) => { e.stopPropagation(); openCreateTaskFromIssue(selectedCaseName, issue.name, 'coverage'); }}>
+                              <AlertTriangle size={14} /> 创建补强任务
+                            </button>
                           </div>
                         )}
                       </div>
@@ -3203,7 +3573,7 @@ function App() {
       <section className="panel strengthen-tasks-panel">
         <div className="panel-title" style={{ marginBottom: 16 }}>
           <AlertTriangle size={18} />
-          <h2>证据补强任务</h2>
+          <h2>补强任务看板</h2>
           <div className="task-metrics-brief">
             <span className="tmb tmb-overdue">逾期：{taskMetrics.overdue}</span>
             <span className="tmb tmb-pending">待处理：{taskMetrics.pending}</span>
@@ -3211,191 +3581,650 @@ function App() {
             <span className="tmb tmb-done">已完成：{taskMetrics.completed}</span>
             <span className="tmb tmb-total">总计：{taskMetrics.total}</span>
           </div>
+          <div className="task-view-toggle">
+            <button type="button" className={`task-view-btn ${taskViewMode === 'board' ? 'active' : ''}`} onClick={() => setTaskViewMode('board')}>
+              <Layers size={14} /> 看板
+            </button>
+            <button type="button" className={`task-view-btn ${taskViewMode === 'list' ? 'active' : ''}`} onClick={() => setTaskViewMode('list')}>
+              <ListChecks size={14} /> 列表
+            </button>
+          </div>
         </div>
 
-        <div className="task-filter-bar">
-          <div className="task-filter-item">
-            <label><Briefcase size={14} /> 案件</label>
-            <select
-              value={taskFilters.caseName}
-              onChange={(e) => setTaskFilters({ ...taskFilters, caseName: e.target.value })}
-            >
-              <option value="">全部案件</option>
-              {caseNames.map((name) => (
-                <option key={name} value={name}>{name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="task-filter-item">
-            <label><Target size={14} /> 争议点</label>
-            <select
-              value={taskFilters.issue}
-              onChange={(e) => setTaskFilters({ ...taskFilters, issue: e.target.value })}
-            >
-              <option value="">全部争议点</option>
-              {taskIssueOptions.length > 0 ? (
-                taskIssueOptions.map((issue) => (
-                  <option key={issue} value={issue}>{issue}</option>
-                ))
-              ) : (
-                (appConfig.fields.find((f) => f.key === 'issue')?.options || []).map((issue) => (
-                  <option key={issue} value={issue}>{issue}</option>
-                ))
-              )}
-            </select>
-          </div>
-          <div className="task-filter-item">
-            <label><AlertCircle size={14} /> 逾期状态</label>
-            <select
-              value={taskFilters.overdueStatus}
-              onChange={(e) => setTaskFilters({ ...taskFilters, overdueStatus: e.target.value })}
-            >
-              <option value="all">全部</option>
-              <option value="overdue">已逾期</option>
-              <option value="not-overdue">未逾期</option>
-            </select>
-          </div>
-          <div className="task-filter-item">
-            <label><CheckCircle2 size={14} /> 处理状态</label>
-            <select
-              value={taskFilters.status}
-              onChange={(e) => setTaskFilters({ ...taskFilters, status: e.target.value })}
-            >
-              <option value="all">全部</option>
-              {TASK_STATUSES.map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-          </div>
-          <button
-            type="button"
-            className="clear-task-filters-btn"
-            onClick={() => setTaskFilters({ caseName: '', issue: '', overdueStatus: 'all', status: 'all' })}
-          >
-            <RotateCcw size={14} /> 重置
-          </button>
-        </div>
-
-        <div className="task-list">
-          {filteredTasks.length > 0 ? (
-            filteredTasks.map((task) => {
-              const overdue = isTaskOverdue(task);
-              const daysLeft = getTaskDaysLeft(task);
-              const statusMeta = TASK_STATUS_META[task.status];
-              return (
-                <div
-                  key={task.id}
-                  className={`task-card ${overdue ? 'overdue' : ''}`}
-                  style={{ borderLeftColor: overdue ? '#dc2626' : statusMeta.color }}
-                >
-                  <div className="task-card-header">
-                    <div className="task-card-title-row">
-                      <h4 className="task-evidence-name">
-                        <FileText size={16} /> {task.evidenceName}
-                      </h4>
-                      <span
-                        className="task-status-chip"
-                        style={{ background: statusMeta.bg, color: statusMeta.color, borderColor: statusMeta.border }}
-                      >
-                        {task.status}
-                      </span>
-                      {overdue && (
-                        <span className="overdue-chip">
-                          <AlertCircle size={12} /> 逾期
-                          {daysLeft !== null ? ` ${Math.abs(daysLeft)} 天` : ''}
-                        </span>
-                      )}
-                      {!overdue && daysLeft !== null && task.status !== '已完成' && task.status !== '已取消' && daysLeft <= 3 && (
-                        <span className="urgent-chip">
-                          <Clock size={12} /> {daysLeft === 0 ? '今日截止' : `剩 ${daysLeft} 天`}
-                        </span>
-                      )}
-                    </div>
-                    <div className="task-card-meta-row">
-                      <span className="task-case-tag">
-                        <Briefcase size={12} /> {task.caseName}
-                      </span>
-                      <span className="task-issue-tag">
-                        <Target size={12} /> {task.issue || '未关联'}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="task-card-body">
-                    <div className="task-reason-block">
-                      <span className="task-block-label">补强原因</span>
-                      <p className="task-reason-text">{task.reason}</p>
-                    </div>
-                    <div className="task-info-row">
-                      <div className="task-info-item">
-                        <Briefcase size={14} />
-                        <span className="ti-label">负责人：</span>
-                        <span className="ti-value">{task.assignee}</span>
-                      </div>
-                      <div className="task-info-item">
-                        <CalendarDays size={14} />
-                        <span className="ti-label">截止日期：</span>
-                        <span className={`ti-value ${overdue ? 'overdue-text' : ''}`}>{task.deadline}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="task-card-footer">
-                    <div className="task-status-actions">
-                      {TASK_STATUSES.map((s) => (
-                        <button
-                          key={s}
-                          type="button"
-                          className={`task-status-btn ${task.status === s ? 'active' : ''}`}
-                          onClick={() => handleTaskStatusChange(task.id, s)}
-                          style={task.status === s ? { background: statusMeta.color, color: '#fff', borderColor: statusMeta.color } : {}}
-                        >
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="task-card-actions">
-                      <button
-                        type="button"
-                        className="task-action-btn edit"
-                        onClick={() => openEditTask(task)}
-                      >
-                        编辑
-                      </button>
-                      <button
-                        type="button"
-                        className="task-action-btn delete"
-                        onClick={() => handleTaskDelete(task.id)}
-                      >
-                        <Trash2 size={14} /> 删除
-                      </button>
-                      <button
-                        type="button"
-                        className="task-action-btn view-evidence"
-                        onClick={() => {
-                          const ev = records.find((r) => r.id === task.evidenceId);
-                          if (ev) setSelected(ev);
-                        }}
-                      >
-                        <Eye size={14} /> 查看证据
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })
-          ) : (
-            <div className="task-list-empty">
-              <ClipboardList size={48} />
-              <h3>暂无补强任务</h3>
-              <p>
-                {taskFilters.caseName || taskFilters.issue || taskFilters.overdueStatus !== 'all' || taskFilters.status !== 'all'
-                  ? '当前筛选条件下没有匹配的任务，可尝试调整筛选条件'
-                  : '在「需补强」的证据卡片上点击「生成任务」按钮，创建补强待办任务'}
-              </p>
+        {taskViewMode === 'board' && (
+          <div className="board-controls">
+            <div className="board-group-by">
+              <span className="board-ctrl-label"><Layers size={14} /> 汇总维度</span>
+              <button type="button" className={`board-group-btn ${boardGroupBy === 'case' ? 'active' : ''}`} onClick={() => setBoardGroupBy('case')}><Briefcase size={12} /> 按案件</button>
+              <button type="button" className={`board-group-btn ${boardGroupBy === 'issue' ? 'active' : ''}`} onClick={() => setBoardGroupBy('issue')}><Target size={12} /> 按争议点</button>
+              <button type="button" className={`board-group-btn ${boardGroupBy === 'assignee' ? 'active' : ''}`} onClick={() => setBoardGroupBy('assignee')}><Clock size={12} /> 按负责人</button>
             </div>
-          )}
-        </div>
+            <label className="board-overdue-toggle">
+              <input type="checkbox" checked={boardFilterOverdue} onChange={(e) => setBoardFilterOverdue(e.target.checked)} />
+              <AlertCircle size={14} /> 仅看逾期
+            </label>
+          </div>
+        )}
+
+        {taskViewMode === 'board' ? (
+          <div className="task-kanban">
+            {boardGroupBy === 'case' && (
+              filteredCaseBoard.length > 0 ? (
+                filteredCaseBoard.map((caseBoard) => {
+                  const isExpanded = boardExpandedCases[caseBoard.caseName] !== false;
+                  return (
+                    <div key={caseBoard.caseName} className="kanban-case-group">
+                      <div className="kanban-case-header" onClick={() => setBoardExpandedCases({ ...boardExpandedCases, [caseBoard.caseName]: !isExpanded })}>
+                        <div className="kanban-case-title">
+                          {isExpanded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+                          <Briefcase size={16} />
+                          <h3>{caseBoard.caseName}</h3>
+                        </div>
+                        <div className="kanban-case-stats">
+                          <span className="kcs kcs-overdue">{caseBoard.overdue} 逾期</span>
+                          <span className="kcs kcs-pending">{caseBoard.pending} 待处理</span>
+                          <span className="kcs kcs-progress">{caseBoard.inProgress} 处理中</span>
+                          <span className="kcs kcs-done">{caseBoard.completed} 已完成</span>
+                          <span className="kcs kcs-total">共 {caseBoard.total}</span>
+                        </div>
+                      </div>
+                      {isExpanded && (
+                        <div className="kanban-case-body">
+                          <div className="kanban-section">
+                            <div className="kanban-section-title">
+                              <Target size={14} />
+                              <span>按争议点</span>
+                            </div>
+                            <div className="kanban-issue-grid">
+                              {caseBoard.issues.map((issueBoard) => {
+                                const issueExpanded = boardExpandedIssues[`${caseBoard.caseName}||${issueBoard.name}`] !== false;
+                                const coverage = computeIssueCoverage(customIssues, caseBoard.caseName, records).find((i) => i.name === issueBoard.name);
+                                const covMeta = coverage ? COVERAGE_STATUS_META[coverage.coverageStatus] : null;
+                                return (
+                                  <div key={issueBoard.name} className="kanban-issue-card" style={covMeta ? { borderColor: covMeta.border, background: covMeta.bg } : {}}>
+                                    <div className="kanban-issue-header" onClick={() => setBoardExpandedIssues({ ...boardExpandedIssues, [`${caseBoard.caseName}||${issueBoard.name}`]: !issueExpanded })}>
+                                      <div className="kanban-issue-title">
+                                        {issueExpanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+                                        {covMeta && <span className="coverage-indicator" style={{ background: covMeta.color }} />}
+                                        <h4 style={covMeta ? { color: covMeta.color } : {}}>{issueBoard.name}</h4>
+                                        {covMeta && <span className="coverage-badge-sm" style={{ background: covMeta.color, color: '#fff' }}>{covMeta.label}</span>}
+                                      </div>
+                                      <div className="kanban-issue-counts">
+                                        <span className="kic-overdue">{issueBoard.overdue}逾期</span>
+                                        <span className="kic-pending">{issueBoard.pending}待处理</span>
+                                        <span>{issueBoard.total}项</span>
+                                      </div>
+                                    </div>
+                                    {issueExpanded && (
+                                      <div className="kanban-issue-tasks">
+                                        {issueBoard.tasks.map((task) => {
+                                          const overdue = isTaskOverdue(task);
+                                          const daysLeft = getTaskDaysLeft(task);
+                                          const statusMeta = TASK_STATUS_META[task.status];
+                                          const taskType = getTaskType(task);
+                                          return (
+                                            <div key={task.id} className={`kanban-task-item ${overdue ? 'overdue' : ''}`} style={{ borderLeftColor: overdue ? '#dc2626' : statusMeta.color }} onClick={() => navigateToTaskContext(task)}>
+                                              <div className="kanban-task-head">
+                                                <span className="kanban-task-type-badge" style={{ background: taskType === 'issue' ? '#b45309' : '#2563eb' }}>
+                                                  {taskType === 'issue' ? '争议点' : '证据'}
+                                                </span>
+                                                <span className="task-status-chip" style={{ background: statusMeta.bg, color: statusMeta.color, borderColor: statusMeta.border }}>{task.status}</span>
+                                                {overdue && <span className="overdue-chip-sm"><AlertCircle size={10} />逾期</span>}
+                                                {!overdue && daysLeft !== null && task.status !== '已完成' && task.status !== '已取消' && daysLeft <= 3 && (
+                                                  <span className="urgent-chip-sm"><Clock size={10} />{daysLeft === 0 ? '今日' : `${daysLeft}天`}</span>
+                                                )}
+                                              </div>
+                                              <div className="kanban-task-name">
+                                                {taskType === 'issue' ? <Target size={12} /> : <FileText size={12} />}
+                                                {task.evidenceName || task.issue}
+                                              </div>
+                                              <div className="kanban-task-meta">
+                                                <span><Briefcase size={10} />{task.assignee || '未分配'}</span>
+                                                <span><CalendarDays size={10} />{task.deadline || '无期限'}</span>
+                                              </div>
+                                              <div className="kanban-task-actions" onClick={(e) => e.stopPropagation()}>
+                                                {TASK_STATUSES.map((s) => (
+                                                  <button key={s} type="button" className={`kanban-task-status-btn ${task.status === s ? 'active' : ''}`} onClick={() => handleTaskStatusChange(task.id, s)} style={task.status === s ? { background: statusMeta.color, color: '#fff' } : {}}>{s.slice(0, 1)}</button>
+                                                ))}
+                                                <button type="button" className="kanban-task-nav-btn" onClick={() => navigateToTaskContext(task)} title="跳转至上下文"><Link2 size={10} /></button>
+                                                {task.evidenceId && (
+                                                  <button type="button" className="kanban-task-nav-btn" onClick={() => {
+                                                    const ev = records.find((r) => r.id === task.evidenceId);
+                                                    if (ev) setSelected(ev);
+                                                  }} title="查看关联证据"><Eye size={10} /></button>
+                                                )}
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                        <button type="button" className="kanban-add-task-btn" onClick={() => openCreateTaskFromIssue(caseBoard.caseName, issueBoard.name, 'board-case')}>
+                                          <Plus size={12} /> 添加任务
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {caseBoard.assignees.length > 0 && (
+                            <div className="kanban-section">
+                              <div className="kanban-section-title">
+                                <Briefcase size={14} />
+                                <span>按负责人</span>
+                              </div>
+                              <div className="kanban-assignee-grid">
+                                {caseBoard.assignees.map((assignee) => (
+                                  <div key={assignee.name} className="kanban-assignee-card">
+                                    <div className="kanban-assignee-header">
+                                      <h4>{assignee.name}</h4>
+                                      <div className="kanban-assignee-counts">
+                                        {assignee.overdue > 0 && <span className="kac-overdue">{assignee.overdue}逾期</span>}
+                                        <span>{assignee.pending}待处理</span>
+                                        <span>{assignee.inProgress}处理中</span>
+                                        <span>{assignee.completed}完成</span>
+                                      </div>
+                                    </div>
+                                    <div className="kanban-assignee-bar">
+                                      <div className="kab-segment kab-pending" style={{ width: `${assignee.total ? (assignee.pending / assignee.total) * 100 : 0}%` }} />
+                                      <div className="kab-segment kab-progress" style={{ width: `${assignee.total ? (assignee.inProgress / assignee.total) * 100 : 0}%` }} />
+                                      <div className="kab-segment kab-done" style={{ width: `${assignee.total ? (assignee.completed / assignee.total) * 100 : 0}%` }} />
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="task-list-empty">
+                  <Layers size={48} />
+                  <h3>暂无补强任务</h3>
+                  <p>在争议点覆盖视图中为「无证据」或「需补强」的争议点创建任务，或在「需补强」的证据上点击「生成任务」</p>
+                </div>
+              )
+            )}
+
+            {boardGroupBy === 'issue' && (
+              filteredIssueBoard.length > 0 ? (
+                <div className="kanban-issue-board">
+                  {filteredIssueBoard.map((issueBoard) => {
+                    const isExpanded = boardExpandedIssues[issueBoard.name] !== false;
+                    return (
+                      <div key={issueBoard.name} className="kanban-issue-group">
+                        <div className="kanban-issue-group-header" onClick={() => setBoardExpandedIssues({ ...boardExpandedIssues, [issueBoard.name]: !isExpanded })}>
+                          <div className="kanban-issue-group-title">
+                            {isExpanded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+                            <Target size={16} />
+                            <h3>{issueBoard.name}</h3>
+                          </div>
+                          <div className="kanban-case-stats">
+                            <span className="kcs kcs-overdue">{issueBoard.overdue} 逾期</span>
+                            <span className="kcs kcs-pending">{issueBoard.pending} 待处理</span>
+                            <span className="kcs kcs-progress">{issueBoard.inProgress} 处理中</span>
+                            <span className="kcs kcs-done">{issueBoard.completed} 已完成</span>
+                            <span className="kcs kcs-total">共 {issueBoard.total}</span>
+                          </div>
+                        </div>
+                        {isExpanded && (
+                          <div className="kanban-issue-group-body">
+                            <div className="kanban-section">
+                              <div className="kanban-section-title">
+                                <Briefcase size={14} />
+                                <span>按案件</span>
+                              </div>
+                              <div className="kanban-case-grid">
+                                {issueBoard.cases.map((caseItem) => {
+                                  const caseExpanded = boardExpandedIssueCases[`${issueBoard.name}||${caseItem.name}`] !== false;
+                                  return (
+                                    <div key={caseItem.name} className="kanban-case-mini-card">
+                                      <div className="kanban-case-mini-header" onClick={() => setBoardExpandedIssueCases({ ...boardExpandedIssueCases, [`${issueBoard.name}||${caseItem.name}`]: !caseExpanded })}>
+                                        <div className="kanban-case-mini-title">
+                                          {caseExpanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+                                          <Briefcase size={14} />
+                                          <h4>{caseItem.name}</h4>
+                                        </div>
+                                        <div className="kanban-case-mini-counts">
+                                          {caseItem.overdue > 0 && <span className="kcm-overdue">{caseItem.overdue}逾期</span>}
+                                          <span>{caseItem.total}项</span>
+                                        </div>
+                                      </div>
+                                      {caseExpanded && (
+                                        <div className="kanban-case-mini-tasks">
+                                          {caseItem.tasks.map((task) => {
+                                            const overdue = isTaskOverdue(task);
+                                            const daysLeft = getTaskDaysLeft(task);
+                                            const statusMeta = TASK_STATUS_META[task.status];
+                                            const taskType = getTaskType(task);
+                                            return (
+                                              <div key={task.id} className={`kanban-task-item ${overdue ? 'overdue' : ''}`} style={{ borderLeftColor: overdue ? '#dc2626' : statusMeta.color }} onClick={() => navigateToTaskContext(task)}>
+                                                <div className="kanban-task-head">
+                                                  <span className="kanban-task-type-badge" style={{ background: taskType === 'issue' ? '#b45309' : '#2563eb' }}>
+                                                    {taskType === 'issue' ? '争议点' : '证据'}
+                                                  </span>
+                                                  <span className="task-status-chip" style={{ background: statusMeta.bg, color: statusMeta.color, borderColor: statusMeta.border }}>{task.status}</span>
+                                                  {overdue && <span className="overdue-chip-sm"><AlertCircle size={10} />逾期</span>}
+                                                  {!overdue && daysLeft !== null && task.status !== '已完成' && task.status !== '已取消' && daysLeft <= 3 && (
+                                                    <span className="urgent-chip-sm"><Clock size={10} />{daysLeft === 0 ? '今日' : `${daysLeft}天`}</span>
+                                                  )}
+                                                </div>
+                                                <div className="kanban-task-name">
+                                                  {taskType === 'issue' ? <Target size={12} /> : <FileText size={12} />}
+                                                  {task.evidenceName || task.issue}
+                                                </div>
+                                                <div className="kanban-task-meta">
+                                                  <span><Briefcase size={10} />{task.assignee || '未分配'}</span>
+                                                  <span><CalendarDays size={10} />{task.deadline || '无期限'}</span>
+                                                </div>
+                                                <div className="kanban-task-actions" onClick={(e) => e.stopPropagation()}>
+                                                  {TASK_STATUSES.map((s) => (
+                                                    <button key={s} type="button" className={`kanban-task-status-btn ${task.status === s ? 'active' : ''}`} onClick={() => handleTaskStatusChange(task.id, s)} style={task.status === s ? { background: statusMeta.color, color: '#fff' } : {}}>{s.slice(0, 1)}</button>
+                                                  ))}
+                                                  <button type="button" className="kanban-task-nav-btn" onClick={() => navigateToTaskContext(task)} title="跳转至上下文"><Link2 size={10} /></button>
+                                                </div>
+                                              </div>
+                                            );
+                                          })}
+                                          <button type="button" className="kanban-add-task-btn" onClick={() => openCreateTaskFromIssue(caseItem.name, issueBoard.name, 'board-issue')}>
+                                            <Plus size={12} /> 添加任务
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+
+                            {issueBoard.assignees.length > 0 && (
+                              <div className="kanban-section">
+                                <div className="kanban-section-title">
+                                  <Briefcase size={14} />
+                                  <span>负责人分布</span>
+                                </div>
+                                <div className="kanban-assignee-mini-grid">
+                                  {issueBoard.assignees.map((assignee) => (
+                                    <div key={assignee.name} className="kanban-assignee-mini-card">
+                                      <span className="assignee-mini-name">{assignee.name}</span>
+                                      <span className="assignee-mini-count">{assignee.total}项</span>
+                                      {assignee.overdue > 0 && <span className="assignee-mini-overdue">{assignee.overdue}逾期</span>}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="task-list-empty">
+                  <Layers size={48} />
+                  <h3>暂无补强任务</h3>
+                  <p>在争议点覆盖视图中为「无证据」或「需补强」的争议点创建任务</p>
+                </div>
+              )
+            )}
+
+            {boardGroupBy === 'assignee' && (
+              filteredAssigneeBoard.length > 0 ? (
+                <div className="kanban-assignee-board">
+                  {filteredAssigneeBoard.map((assigneeBoard) => {
+                    const isExpanded = boardExpandedAssignees[assigneeBoard.name] !== false;
+                    return (
+                      <div key={assigneeBoard.name} className="kanban-assignee-group">
+                        <div className="kanban-assignee-group-header" onClick={() => setBoardExpandedAssignees({ ...boardExpandedAssignees, [assigneeBoard.name]: !isExpanded })}>
+                          <div className="kanban-assignee-group-title">
+                            {isExpanded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+                            <Briefcase size={16} />
+                            <h3>{assigneeBoard.name}</h3>
+                            {assigneeBoard.overdue > 0 && <span className="assignee-group-overdue"><AlertCircle size={14} />{assigneeBoard.overdue} 逾期</span>}
+                          </div>
+                          <div className="kanban-case-stats">
+                            <span className="kcs kcs-pending">{assigneeBoard.pending} 待处理</span>
+                            <span className="kcs kcs-progress">{assigneeBoard.inProgress} 处理中</span>
+                            <span className="kcs kcs-done">{assigneeBoard.completed} 已完成</span>
+                            <span className="kcs kcs-total">共 {assigneeBoard.total}</span>
+                          </div>
+                        </div>
+                        {isExpanded && (
+                          <div className="kanban-assignee-group-body">
+                            <div className="kanban-assignee-progress-bar">
+                              <div className="kab-segment kab-pending" style={{ width: `${assigneeBoard.total ? (assigneeBoard.pending / assigneeBoard.total) * 100 : 0}%` }} />
+                              <div className="kab-segment kab-progress" style={{ width: `${assigneeBoard.total ? (assigneeBoard.inProgress / assigneeBoard.total) * 100 : 0}%` }} />
+                              <div className="kab-segment kab-done" style={{ width: `${assigneeBoard.total ? (assigneeBoard.completed / assigneeBoard.total) * 100 : 0}%` }} />
+                            </div>
+
+                            {assigneeBoard.cases.length > 0 && (
+                              <div className="kanban-section">
+                                <div className="kanban-section-title">
+                                  <Briefcase size={14} />
+                                  <span>按案件</span>
+                                </div>
+                                <div className="kanban-case-grid">
+                                  {assigneeBoard.cases.map((caseItem) => {
+                                    const caseExpanded = boardExpandedAssigneeCases[`${assigneeBoard.name}||${caseItem.name}`] !== false;
+                                    const caseTasks = assigneeBoard.tasks.filter((t) => t.caseName === caseItem.name);
+                                    return (
+                                      <div key={caseItem.name} className="kanban-case-mini-card">
+                                        <div className="kanban-case-mini-header" onClick={() => setBoardExpandedAssigneeCases({ ...boardExpandedAssigneeCases, [`${assigneeBoard.name}||${caseItem.name}`]: !caseExpanded })}>
+                                          <div className="kanban-case-mini-title">
+                                            {caseExpanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+                                            <Briefcase size={14} />
+                                            <h4>{caseItem.name}</h4>
+                                          </div>
+                                          <div className="kanban-case-mini-counts">
+                                            {caseItem.overdue > 0 && <span className="kcm-overdue">{caseItem.overdue}逾期</span>}
+                                            <span>{caseItem.total}项</span>
+                                          </div>
+                                        </div>
+                                        {caseExpanded && (
+                                          <div className="kanban-case-mini-tasks">
+                                            {caseTasks.map((task) => {
+                                              const overdue = isTaskOverdue(task);
+                                              const daysLeft = getTaskDaysLeft(task);
+                                              const statusMeta = TASK_STATUS_META[task.status];
+                                              const taskType = getTaskType(task);
+                                              return (
+                                                <div key={task.id} className={`kanban-task-item ${overdue ? 'overdue' : ''}`} style={{ borderLeftColor: overdue ? '#dc2626' : statusMeta.color }} onClick={() => navigateToTaskContext(task)}>
+                                                  <div className="kanban-task-head">
+                                                    <span className="kanban-task-type-badge" style={{ background: taskType === 'issue' ? '#b45309' : '#2563eb' }}>
+                                                      {taskType === 'issue' ? '争议点' : '证据'}
+                                                    </span>
+                                                    <span className="task-status-chip" style={{ background: statusMeta.bg, color: statusMeta.color, borderColor: statusMeta.border }}>{task.status}</span>
+                                                    {overdue && <span className="overdue-chip-sm"><AlertCircle size={10} />逾期</span>}
+                                                    {!overdue && daysLeft !== null && task.status !== '已完成' && task.status !== '已取消' && daysLeft <= 3 && (
+                                                      <span className="urgent-chip-sm"><Clock size={10} />{daysLeft === 0 ? '今日' : `${daysLeft}天`}</span>
+                                                    )}
+                                                  </div>
+                                                  <div className="kanban-task-name">
+                                                    {taskType === 'issue' ? <Target size={12} /> : <FileText size={12} />}
+                                                    {task.evidenceName || task.issue}
+                                                  </div>
+                                                  <div className="kanban-task-meta">
+                                                    <span><Target size={10} />{task.issue || '未关联'}</span>
+                                                    <span><CalendarDays size={10} />{task.deadline || '无期限'}</span>
+                                                  </div>
+                                                  <div className="kanban-task-actions" onClick={(e) => e.stopPropagation()}>
+                                                    {TASK_STATUSES.map((s) => (
+                                                      <button key={s} type="button" className={`kanban-task-status-btn ${task.status === s ? 'active' : ''}`} onClick={() => handleTaskStatusChange(task.id, s)} style={task.status === s ? { background: statusMeta.color, color: '#fff' } : {}}>{s.slice(0, 1)}</button>
+                                                    ))}
+                                                    <button type="button" className="kanban-task-nav-btn" onClick={() => navigateToTaskContext(task)} title="跳转至上下文"><Link2 size={10} /></button>
+                                                  </div>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+
+                            {assigneeBoard.issues.length > 0 && (
+                              <div className="kanban-section">
+                                <div className="kanban-section-title">
+                                  <Target size={14} />
+                                  <span>争议点分布</span>
+                                </div>
+                                <div className="kanban-issue-mini-grid">
+                                  {assigneeBoard.issues.map((issue) => (
+                                    <div key={issue.name} className="kanban-issue-mini-card">
+                                      <span className="issue-mini-name">{issue.name}</span>
+                                      <span className="issue-mini-count">{issue.total}项</span>
+                                      {issue.overdue > 0 && <span className="issue-mini-overdue">{issue.overdue}逾期</span>}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="task-list-empty">
+                  <Layers size={48} />
+                  <h3>暂无补强任务</h3>
+                  <p>创建任务时分配负责人后，可在此视图按负责人查看</p>
+                </div>
+              )
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="task-filter-bar">
+              <div className="task-filter-item">
+                <label><Briefcase size={14} /> 案件</label>
+                <select
+                  value={taskFilters.caseName}
+                  onChange={(e) => setTaskFilters({ ...taskFilters, caseName: e.target.value })}
+                >
+                  <option value="">全部案件</option>
+                  {caseNames.map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="task-filter-item">
+                <label><Target size={14} /> 争议点</label>
+                <select
+                  value={taskFilters.issue}
+                  onChange={(e) => setTaskFilters({ ...taskFilters, issue: e.target.value })}
+                >
+                  <option value="">全部争议点</option>
+                  {taskIssueOptions.length > 0 ? (
+                    taskIssueOptions.map((issue) => (
+                      <option key={issue} value={issue}>{issue}</option>
+                    ))
+                  ) : (
+                    (appConfig.fields.find((f) => f.key === 'issue')?.options || []).map((issue) => (
+                      <option key={issue} value={issue}>{issue}</option>
+                    ))
+                  )}
+                </select>
+              </div>
+              <div className="task-filter-item">
+                <label><AlertCircle size={14} /> 逾期状态</label>
+                <select
+                  value={taskFilters.overdueStatus}
+                  onChange={(e) => setTaskFilters({ ...taskFilters, overdueStatus: e.target.value })}
+                >
+                  <option value="all">全部</option>
+                  <option value="overdue">已逾期</option>
+                  <option value="not-overdue">未逾期</option>
+                </select>
+              </div>
+              <div className="task-filter-item">
+                <label><CheckCircle2 size={14} /> 处理状态</label>
+                <select
+                  value={taskFilters.status}
+                  onChange={(e) => setTaskFilters({ ...taskFilters, status: e.target.value })}
+                >
+                  <option value="all">全部</option>
+                  {TASK_STATUSES.map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+              </div>
+              <button
+                type="button"
+                className="clear-task-filters-btn"
+                onClick={() => setTaskFilters({ caseName: '', issue: '', overdueStatus: 'all', status: 'all' })}
+              >
+                <RotateCcw size={14} /> 重置
+              </button>
+            </div>
+
+            <div className="task-list">
+              {filteredTasks.length > 0 ? (
+                filteredTasks.map((task) => {
+                  const overdue = isTaskOverdue(task);
+                  const daysLeft = getTaskDaysLeft(task);
+                  const statusMeta = TASK_STATUS_META[task.status];
+                  const taskType = getTaskType(task);
+                  const hasContext = task.sourceContext || task.caseName || task.evidenceId;
+                  const sourceLabel = getTaskSourceLabel(task);
+                  return (
+                    <div
+                      key={task.id}
+                      className={`task-card ${overdue ? 'overdue' : ''} ${hasContext ? 'clickable' : ''}`}
+                      style={{ borderLeftColor: overdue ? '#dc2626' : statusMeta.color }}
+                      onClick={hasContext ? () => navigateToTaskContext(task) : undefined}
+                    >
+                      <div className="task-card-header">
+                        <div className="task-card-title-row">
+                          <h4 className="task-evidence-name">
+                            {taskType === 'issue' ? <Target size={16} /> : <FileText size={16} />}
+                            <span className="task-type-tag" style={{ background: taskType === 'issue' ? '#fff7ed' : '#eff6ff', color: taskType === 'issue' ? '#b45309' : '#2563eb', borderColor: taskType === 'issue' ? '#fed7aa' : '#bfdbfe' }}>
+                              {taskType === 'issue' ? '争议点级' : '证据级'}
+                            </span>
+                            {task.evidenceName || task.issue}
+                          </h4>
+                          <span
+                            className="task-status-chip"
+                            style={{ background: statusMeta.bg, color: statusMeta.color, borderColor: statusMeta.border }}
+                          >
+                            {task.status}
+                          </span>
+                          {overdue && (
+                            <span className="overdue-chip">
+                              <AlertCircle size={12} /> 逾期
+                              {daysLeft !== null ? ` ${Math.abs(daysLeft)} 天` : ''}
+                            </span>
+                          )}
+                          {!overdue && daysLeft !== null && task.status !== '已完成' && task.status !== '已取消' && daysLeft <= 3 && (
+                            <span className="urgent-chip">
+                              <Clock size={12} /> {daysLeft === 0 ? '今日截止' : `剩 ${daysLeft} 天`}
+                            </span>
+                          )}
+                        </div>
+                        <div className="task-card-meta-row">
+                          <span className="task-case-tag">
+                            <Briefcase size={12} /> {task.caseName}
+                          </span>
+                          <span className="task-issue-tag">
+                            <Target size={12} /> {task.issue || '未关联'}
+                          </span>
+                          <span className="task-source-tag"><History size={10} /> 来源：{sourceLabel}</span>
+                          {hasContext && (
+                            <span className="task-context-hint"><Link2 size={10} /> 点击跳转</span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="task-card-body">
+                        <div className="task-reason-block">
+                          <span className="task-block-label">补强原因</span>
+                          <p className="task-reason-text">{task.reason}</p>
+                        </div>
+                        <div className="task-info-row">
+                          <div className="task-info-item">
+                            <Briefcase size={14} />
+                            <span className="ti-label">负责人：</span>
+                            <span className="ti-value">{task.assignee}</span>
+                          </div>
+                          <div className="task-info-item">
+                            <CalendarDays size={14} />
+                            <span className="ti-label">截止日期：</span>
+                            <span className={`ti-value ${overdue ? 'overdue-text' : ''}`}>{task.deadline}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="task-card-footer" onClick={(e) => e.stopPropagation()}>
+                        <div className="task-status-actions">
+                          {TASK_STATUSES.map((s) => (
+                            <button
+                              key={s}
+                              type="button"
+                              className={`task-status-btn ${task.status === s ? 'active' : ''}`}
+                              onClick={() => handleTaskStatusChange(task.id, s)}
+                              style={task.status === s ? { background: statusMeta.color, color: '#fff', borderColor: statusMeta.color } : {}}
+                            >
+                              {s}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="task-card-actions">
+                          <button
+                            type="button"
+                            className="task-action-btn edit"
+                            onClick={() => openEditTask(task)}
+                          >
+                            编辑
+                          </button>
+                          <button
+                            type="button"
+                            className="task-action-btn delete"
+                            onClick={() => handleTaskDelete(task.id)}
+                          >
+                            <Trash2 size={14} /> 删除
+                          </button>
+                          {task.evidenceId && (
+                            <button
+                              type="button"
+                              className="task-action-btn view-evidence"
+                              onClick={() => {
+                                const ev = records.find((r) => r.id === task.evidenceId);
+                                if (ev) setSelected(ev);
+                              }}
+                            >
+                              <Eye size={14} /> 查看证据
+                            </button>
+                          )}
+                          {hasContext && (
+                            <button
+                              type="button"
+                              className="task-action-btn goto-context"
+                              onClick={() => navigateToTaskContext(task)}
+                            >
+                              <Link2 size={14} /> 跳转上下文
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            className="task-action-btn goto-coverage"
+                            onClick={() => {
+                              if (task.caseName) {
+                                setSelectedCaseName(task.caseName);
+                                setWorkbenchCase(task.caseName);
+                                setWorkbenchTab('coverage');
+                              }
+                            }}
+                          >
+                            <Target size={14} /> 定位争议点
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              ) : (
+                <div className="task-list-empty">
+                  <ClipboardList size={48} />
+                  <h3>暂无补强任务</h3>
+                  <p>
+                    {taskFilters.caseName || taskFilters.issue || taskFilters.overdueStatus !== 'all' || taskFilters.status !== 'all'
+                      ? '当前筛选条件下没有匹配的任务，可尝试调整筛选条件'
+                      : '在争议点覆盖视图中为「无证据」或「需补强」的争议点创建任务，或在「需补强」的证据上点击「生成任务」'}
+                  </p>
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </section>
 
       <section className="insights">
@@ -3560,7 +4389,7 @@ function App() {
             <div className="modal-header">
               <div className="panel-title" style={{ marginBottom: 0 }}>
                 <AlertTriangle size={18} />
-                <h2>{taskModalMode === 'create' ? '创建证据补强任务' : '编辑补强任务'}</h2>
+                <h2>{taskModalMode === 'create' ? (taskForm.taskType === 'issue' ? '创建争议点补强任务' : '创建证据补强任务') : '编辑补强任务'}</h2>
               </div>
               <button type="button" className="icon-btn" onClick={closeTaskModal}>
                 <X size={18} />
@@ -3570,20 +4399,35 @@ function App() {
             <form className="modal-body" onSubmit={handleTaskFormSubmit}>
               <div className="task-form-section">
                 <div className="task-form-evidence-info">
-                  <div className="tfei-title">关联证据</div>
+                  <div className="tfei-title">{taskForm.taskType === 'issue' ? '关联争议点' : '关联证据'}</div>
                   <div className="tfei-content">
-                    <div className="tfei-row">
-                      <span className="tfei-label"><FileText size={14} /> 证据材料：</span>
-                      <span className="tfei-value tfei-evidence">{taskForm.evidenceName}</span>
-                    </div>
-                    <div className="tfei-row">
-                      <span className="tfei-label"><Briefcase size={14} /> 案件：</span>
-                      <span className="tfei-value">{taskForm.caseName}</span>
-                    </div>
-                    <div className="tfei-row">
-                      <span className="tfei-label"><Target size={14} /> 争议点：</span>
-                      <span className="tfei-value">{taskForm.issue || '未关联'}</span>
-                    </div>
+                    {taskForm.taskType === 'issue' ? (
+                      <>
+                        <div className="tfei-row">
+                          <span className="tfei-label"><Briefcase size={14} /> 案件：</span>
+                          <span className="tfei-value">{taskForm.caseName}</span>
+                        </div>
+                        <div className="tfei-row">
+                          <span className="tfei-label"><Target size={14} /> 争议点：</span>
+                          <span className="tfei-value tfei-evidence">{taskForm.issue}</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="tfei-row">
+                          <span className="tfei-label"><FileText size={14} /> 证据材料：</span>
+                          <span className="tfei-value tfei-evidence">{taskForm.evidenceName}</span>
+                        </div>
+                        <div className="tfei-row">
+                          <span className="tfei-label"><Briefcase size={14} /> 案件：</span>
+                          <span className="tfei-value">{taskForm.caseName}</span>
+                        </div>
+                        <div className="tfei-row">
+                          <span className="tfei-label"><Target size={14} /> 争议点：</span>
+                          <span className="tfei-value">{taskForm.issue || '未关联'}</span>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -3984,13 +4828,19 @@ function App() {
                       </select>
                     </div>
                   </label>
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={exportConfig.hideConfidential}
-                      onChange={(e) => setExportConfig({ ...exportConfig, hideConfidential: e.target.checked })}
-                    />
-                    <span>隐藏「机密」材料</span>
+                  <label>
+                    <span><Shield size={13} /> 出卷分级模式</span>
+                    <div className="export-select-wrap">
+                      <Shield size={16} />
+                      <select
+                        value={exportConfig.exportLevel}
+                        onChange={(e) => setExportConfig({ ...exportConfig, exportLevel: e.target.value })}
+                      >
+                        {VIEW_MODES.map((m) => (
+                          <option key={m.key} value={m.key}>{m.label} — {m.desc}</option>
+                        ))}
+                      </select>
+                    </div>
                   </label>
                   <label className="checkbox-label">
                     <input
@@ -4037,6 +4887,12 @@ function App() {
                     </div>
                   </div>
                 </div>
+                {exportConfig.exportLevel !== '机密' && exportData.some((d) => d._masked) && (
+                  <div className="export-mode-hint">
+                    <Info size={14} />
+                    当前出卷模式为「{exportConfig.exportLevel}」，{exportData.filter((d) => d._masked).length} 条超出级别的材料已自动脱敏展示
+                  </div>
+                )}
               </div>
 
               <div className="export-preview-section">
@@ -4059,9 +4915,12 @@ function App() {
                       </thead>
                       <tbody>
                         {exportData.slice(0, 20).map((item, idx) => (
-                          <tr key={item.id}>
+                          <tr key={item.id} className={item._masked ? 'preview-row-masked' : ''}>
                             <td className="row-num">{idx + 1}</td>
-                            <td className="ev-name">{item.evidence}</td>
+                            <td className="ev-name">
+                              {item.evidence}
+                              {item._masked && <em className="cell-masked-tag"><Shield size={10} />脱敏</em>}
+                            </td>
                             <td>{item.source || '-'}</td>
                             <td>{item.date || '-'}</td>
                             <td className="ev-purpose">{item.purpose || '-'}</td>
@@ -4117,6 +4976,11 @@ function App() {
             <div className="print-toolbar-title">
               <FileText size={18} />
               证据目录打印预览
+              {exportConfig.exportLevel !== '机密' && (
+                <span className={'toolbar-level-badge toolbar-' + exportConfig.exportLevel}>
+                  <Shield size={12} /> {exportConfig.exportLevel}模式
+                </span>
+              )}
             </div>
             <button type="button" className="primary print-btn" onClick={() => window.print()}>
               <Printer size={18} />
@@ -4144,10 +5008,18 @@ function App() {
                   <span>证据总数：</span>
                   <strong>{exportStats.total} 份</strong>
                 </div>
-                {exportConfig.hideConfidential && (
-                  <div className="print-meta-row">
+                <div className="print-meta-row">
+                  <span>出卷分级：</span>
+                  <strong style={{ color: VIEW_MODES.find(m => m.key === exportConfig.exportLevel)?.color }}>
+                    {exportConfig.exportLevel}
+                  </strong>
+                </div>
+                {exportConfig.exportLevel !== '机密' && exportData.some((d) => d._masked) && (
+                  <div className="print-meta-row print-meta-note">
                     <span>备注：</span>
-                    <strong style={{ color: '#dc2626' }}>已排除机密材料</strong>
+                    <strong style={{ color: '#dc2626' }}>
+                      超出级别的 {exportData.filter((d) => d._masked).length} 条材料已脱敏
+                    </strong>
                   </div>
                 )}
               </div>
@@ -4185,9 +5057,12 @@ function App() {
                         </thead>
                         <tbody>
                           {items.map((item, idx) => (
-                            <tr key={item.id}>
+                            <tr key={item.id} className={item._masked ? 'print-row-masked' : ''}>
                               <td className="pt-num">{idx + 1}</td>
-                              <td className="pt-name">{item.evidence}</td>
+                              <td className="pt-name">
+                                {item.evidence}
+                                {item._masked && <em className="print-masked-tag"><Shield size={10} />脱敏</em>}
+                              </td>
                               <td>{item.source || '-'}</td>
                               <td>{item.date || '-'}</td>
                               <td className="pt-purpose">{item.purpose || '-'}</td>
@@ -4231,9 +5106,12 @@ function App() {
                   </thead>
                   <tbody>
                     {exportData.map((item, idx) => (
-                      <tr key={item.id}>
+                      <tr key={item.id} className={item._masked ? 'print-row-masked' : ''}>
                         <td className="pt-num">{idx + 1}</td>
-                        <td className="pt-name">{item.evidence}</td>
+                        <td className="pt-name">
+                          {item.evidence}
+                          {item._masked && <em className="print-masked-tag"><Shield size={10} />脱敏</em>}
+                        </td>
                         <td>{item.caseName}</td>
                         <td>{item.source || '-'}</td>
                         <td>{item.date || '-'}</td>
