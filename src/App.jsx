@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight, Database, History, Download, Star } from 'lucide-react';
+import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, ChevronUp, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight, ArrowRightLeft, Database, History, Download, Star, Settings } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -953,7 +953,7 @@ function matchField(header) {
   return null;
 }
 
-function buildImportPreview(text) {
+function buildImportPreview(text, customFieldMapping = {}) {
   if (!text.trim()) {
     return {
       hasData: false,
@@ -966,7 +966,9 @@ function buildImportPreview(text) {
       validRows: [],
       invalidRows: [],
       rowCount: 0,
-      fieldMapping: {}
+      fieldMapping: {},
+      headers: [],
+      rawRows: []
     };
   }
 
@@ -976,7 +978,12 @@ function buildImportPreview(text) {
   const unmatchedHeaders = [];
 
   headers.forEach((header, index) => {
-    const fieldKey = matchField(header);
+    let fieldKey = null;
+    if (customFieldMapping[index] !== undefined && customFieldMapping[index] !== null) {
+      fieldKey = customFieldMapping[index];
+    } else {
+      fieldKey = matchField(header);
+    }
     if (fieldKey) {
       fieldMapping[fieldKey] = index;
       if (!matchedFields.includes(fieldKey)) {
@@ -1041,7 +1048,9 @@ function buildImportPreview(text) {
     validRows,
     invalidRows,
     rowCount: rows.length,
-    fieldMapping
+    fieldMapping,
+    headers,
+    rawRows: rows
   };
 }
 
@@ -1053,6 +1062,8 @@ function App() {
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState('');
   const [importResult, setImportResult] = useState(null);
+  const [customFieldMapping, setCustomFieldMapping] = useState({});
+  const [showFieldMapper, setShowFieldMapper] = useState(false);
   const [selectedCaseName, setSelectedCaseName] = useState('');
   const [templateData, setTemplateData] = useState(loadTemplates);
   const [showTemplatePanel, setShowTemplatePanel] = useState(false);
@@ -1235,19 +1246,44 @@ function App() {
 
   function handleImportTextChange(value) {
     setImportText(value);
-    setImportResult(buildImportPreview(value));
+    setImportResult(buildImportPreview(value, customFieldMapping));
+  }
+
+  function handleFieldMappingChange(colIndex, fieldKey) {
+    const newMapping = { ...customFieldMapping };
+    if (fieldKey === null || fieldKey === '') {
+      delete newMapping[colIndex];
+    } else {
+      Object.keys(newMapping).forEach(key => {
+        if (newMapping[key] === fieldKey) {
+          delete newMapping[key];
+        }
+      });
+      newMapping[colIndex] = fieldKey;
+    }
+    setCustomFieldMapping(newMapping);
+    setImportResult(buildImportPreview(importText, newMapping));
+  }
+
+  function resetFieldMapping() {
+    setCustomFieldMapping({});
+    setImportResult(buildImportPreview(importText, {}));
   }
 
   function openImport() {
     setShowImport(true);
     setImportText('');
     setImportResult(null);
+    setCustomFieldMapping({});
+    setShowFieldMapper(false);
   }
 
   function closeImport() {
     setShowImport(false);
     setImportText('');
     setImportResult(null);
+    setCustomFieldMapping({});
+    setShowFieldMapper(false);
   }
 
   function confirmImport() {
@@ -3694,9 +3730,19 @@ function App() {
                   </div>
 
                   <div className="import-section">
-                    <h3 className="section-title">
-                      <Check size={16} /> 字段识别结果
-                    </h3>
+                    <div className="section-header">
+                      <h3 className="section-title">
+                        <Check size={16} /> 字段识别结果
+                      </h3>
+                      <button
+                        type="button"
+                        className="secondary small-btn"
+                        onClick={() => setShowFieldMapper(!showFieldMapper)}
+                      >
+                        {showFieldMapper ? <ChevronUp size={14} /> : <Settings size={14} />}
+                        {showFieldMapper ? '收起映射' : '调整字段映射'}
+                      </button>
+                    </div>
                     <div className="field-tags">
                       {ALL_FIELDS.map(key => {
                         const field = appConfig.fields.find(f => f.key === key);
@@ -3724,6 +3770,94 @@ function App() {
                       <div className="missing-alert">
                         <AlertTriangle size={16} /> 缺少必填字段：
                         {importResult.missingRequired.map(f => f.label).join('、')}，这些行将被跳过。
+                      </div>
+                    )}
+
+                    {showFieldMapper && (
+                      <div className="field-mapper-panel">
+                        <div className="mapper-header">
+                          <h4><ArrowRightLeft size={16} /> 字段映射配置</h4>
+                          <button
+                            type="button"
+                            className="ghost-btn small-btn"
+                            onClick={resetFieldMapping}
+                          >
+                            <RotateCcw size={14} /> 重置为自动匹配
+                          </button>
+                        </div>
+                        <p className="hint mapper-hint">
+                          <Info size={14} /> 为每列CSV数据选择对应的目标字段。带 <em>*</em> 标记的为必填字段。
+                        </p>
+                        <div className="mapper-table-wrap">
+                          <table className="mapper-table">
+                            <thead>
+                              <tr>
+                                <th style={{ width: 60 }}>列号</th>
+                                <th>CSV列名</th>
+                                <th style={{ width: 60 }}>示例值</th>
+                                <th>映射到</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {importResult.headers.map((header, colIndex) => {
+                                const autoMatchedKey = matchField(header);
+                                const currentMapping = customFieldMapping[colIndex] !== undefined
+                                  ? customFieldMapping[colIndex]
+                                  : autoMatchedKey;
+                                const sampleValue = importResult.rawRows[0]?.[colIndex] || '';
+
+                                return (
+                                  <tr key={colIndex}>
+                                    <td className="col-num">{colIndex + 1}</td>
+                                    <td className="col-name">
+                                      <span className="header-text">{header}</span>
+                                      {autoMatchedKey && customFieldMapping[colIndex] === undefined && (
+                                        <span className="auto-match-badge">自动匹配</span>
+                                      )}
+                                      {customFieldMapping[colIndex] !== undefined && (
+                                        <span className="manual-match-badge">手动映射</span>
+                                      )}
+                                    </td>
+                                    <td className="sample-value">
+                                      <code>{String(sampleValue).slice(0, 12)}{String(sampleValue).length > 12 ? '...' : ''}</code>
+                                    </td>
+                                    <td>
+                                      <select
+                                        className="field-select"
+                                        value={currentMapping || ''}
+                                        onChange={(e) => handleFieldMappingChange(colIndex, e.target.value || null)}
+                                      >
+                                        <option value="">-- 不导入此列 --</option>
+                                        {ALL_FIELDS.map(fieldKey => {
+                                          const field = appConfig.fields.find(f => f.key === fieldKey);
+                                          const label = field?.label || (fieldKey === 'status' ? '当前状态' : fieldKey);
+                                          const required = REQUIRED_FIELDS.includes(fieldKey);
+                                          const customMappedCol = Object.entries(customFieldMapping).find(
+                                            ([idx, mappedKey]) => Number(idx) !== colIndex && mappedKey === fieldKey
+                                          );
+                                          const autoMappedCol = importResult.fieldMapping[fieldKey];
+                                          const isAutoMappedElsewhere = autoMappedCol !== undefined 
+                                            && autoMappedCol !== colIndex 
+                                            && customFieldMapping[autoMappedCol] === undefined;
+                                          const isMappedElsewhere = customMappedCol !== undefined || isAutoMappedElsewhere;
+                                          return (
+                                            <option
+                                              key={fieldKey}
+                                              value={fieldKey}
+                                              disabled={isMappedElsewhere}
+                                            >
+                                              {label}{required ? ' *' : ''}{isMappedElsewhere ? ' (已映射)' : ''}
+                                            </option>
+                                          );
+                                        })}
+                                      </select>
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
                     )}
                   </div>

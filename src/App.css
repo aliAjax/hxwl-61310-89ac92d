@@ -543,6 +543,194 @@ textarea { min-height: 76px; resize: vertical; }
   gap: 6px;
 }
 
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.small-btn {
+  padding: 6px 12px;
+  font-size: 13px;
+  gap: 6px;
+}
+
+.field-mapper-panel {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 4px;
+}
+
+.mapper-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.mapper-header h4 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.mapper-hint {
+  margin: 0 0 12px 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.mapper-hint em {
+  font-style: normal;
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.mapper-table-wrap {
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  overflow: hidden;
+  overflow-x: auto;
+  max-height: 320px;
+  background: #fff;
+}
+
+.mapper-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.mapper-table th,
+.mapper-table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+}
+
+.mapper-table th {
+  background: #f1f5f9;
+  color: #475569;
+  font-weight: 700;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.mapper-table tbody tr:hover {
+  background: #f8fafc;
+}
+
+.mapper-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.mapper-table .col-num {
+  color: #94a3b8;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+}
+
+.mapper-table .col-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mapper-table .header-text {
+  font-weight: 600;
+  color: #1e293b;
+  word-break: break-all;
+}
+
+.auto-match-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  background: #dbeafe;
+  color: #1e40af;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.manual-match-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.mapper-table .sample-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #64748b;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mapper-table .sample-value code {
+  background: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+  color: #475569;
+}
+
+.field-select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 13px;
+  color: #1e293b;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.field-select:hover {
+  border-color: #94a3b8;
+}
+
+.field-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.field-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.field-select option {
+  padding: 8px;
+}
+
+.field-select option:disabled {
+  color: #94a3b8;
+  background: #f1f5f9;
+}
+
 @media (max-width: 620px) {
   h1 { font-size: 26px; }
   .form-grid, .toolbar, .form-actions { grid-template-columns: 1fr; display: grid; }
