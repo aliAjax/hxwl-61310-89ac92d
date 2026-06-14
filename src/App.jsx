@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight, Database, History, Download } from 'lucide-react';
+import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight, Database, History, Download, Star } from 'lucide-react';
 import './App.css';
 
 const appConfig = {
@@ -511,38 +511,109 @@ function loadTemplates() {
   const raw = localStorage.getItem(appConfig.templateStorage);
   if (raw) {
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && ('custom' in parsed || 'favorites' in parsed || 'recent' in parsed)) {
+        return {
+          custom: parsed.custom || {},
+          favorites: parsed.favorites || {},
+          recent: parsed.recent || {},
+        };
+      }
+      return {
+        custom: parsed || {},
+        favorites: {},
+        recent: {},
+      };
     } catch {
-      return {};
+      return { custom: {}, favorites: {}, recent: {} };
     }
   }
-  return {};
+  return { custom: {}, favorites: {}, recent: {} };
 }
 
-function saveTemplates(customTemplates) {
-  localStorage.setItem(appConfig.templateStorage, JSON.stringify(customTemplates));
+function saveTemplates(templateData) {
+  localStorage.setItem(appConfig.templateStorage, JSON.stringify(templateData));
 }
 
-function addCustomTemplate(customTemplates, issue, purpose) {
-  const next = { ...customTemplates };
-  if (!next[issue]) {
-    next[issue] = [];
+function addCustomTemplate(templateData, issue, purpose) {
+  const next = {
+    custom: { ...templateData.custom },
+    favorites: { ...templateData.favorites },
+    recent: { ...templateData.recent },
+  };
+  if (!next.custom[issue]) {
+    next.custom[issue] = [];
   }
-  if (!next[issue].includes(purpose)) {
-    next[issue] = [...next[issue], purpose];
+  if (!next.custom[issue].includes(purpose)) {
+    next.custom[issue] = [...next.custom[issue], purpose];
   }
   saveTemplates(next);
   return next;
 }
 
-function removeCustomTemplate(customTemplates, issue, purpose) {
-  const next = { ...customTemplates };
-  if (next[issue]) {
-    next[issue] = next[issue].filter((item) => item !== purpose);
-    if (next[issue].length === 0) {
-      delete next[issue];
+function removeCustomTemplate(templateData, issue, purpose) {
+  const next = {
+    custom: { ...templateData.custom },
+    favorites: { ...templateData.favorites },
+    recent: { ...templateData.recent },
+  };
+  if (next.custom[issue]) {
+    next.custom[issue] = next.custom[issue].filter((item) => item !== purpose);
+    if (next.custom[issue].length === 0) {
+      delete next.custom[issue];
     }
   }
+  if (next.favorites[issue]) {
+    next.favorites[issue] = next.favorites[issue].filter((item) => item !== purpose);
+    if (next.favorites[issue].length === 0) {
+      delete next.favorites[issue];
+    }
+  }
+  if (next.recent[issue]) {
+    delete next.recent[issue][purpose];
+    if (Object.keys(next.recent[issue]).length === 0) {
+      delete next.recent[issue];
+    }
+  }
+  saveTemplates(next);
+  return next;
+}
+
+function toggleFavorite(templateData, issue, purpose) {
+  const next = {
+    custom: { ...templateData.custom },
+    favorites: { ...templateData.favorites },
+    recent: { ...templateData.recent },
+  };
+  if (!next.favorites[issue]) {
+    next.favorites[issue] = [];
+  }
+  if (next.favorites[issue].includes(purpose)) {
+    next.favorites[issue] = next.favorites[issue].filter((item) => item !== purpose);
+    if (next.favorites[issue].length === 0) {
+      delete next.favorites[issue];
+    }
+  } else {
+    next.favorites[issue] = [...next.favorites[issue], purpose];
+  }
+  saveTemplates(next);
+  return next;
+}
+
+function isFavorite(templateData, issue, purpose) {
+  return templateData.favorites?.[issue]?.includes(purpose) ?? false;
+}
+
+function recordRecentUse(templateData, issue, purpose) {
+  const next = {
+    custom: { ...templateData.custom },
+    favorites: { ...templateData.favorites },
+    recent: { ...templateData.recent },
+  };
+  if (!next.recent[issue]) {
+    next.recent[issue] = {};
+  }
+  next.recent[issue] = { ...next.recent[issue], [purpose]: Date.now() };
   saveTemplates(next);
   return next;
 }
@@ -726,21 +797,49 @@ const COVERAGE_STATUS_META = {
   'partial': { label: '部分覆盖', color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe', icon: 'info' },
 };
 
-function getAllTemplates(customTemplates) {
+function getAllTemplates(templateData) {
+  const { custom = {}, favorites = {}, recent = {} } = templateData || {};
   const result = {};
-  Object.keys(appConfig.purposeTemplates).forEach((issue) => {
-    result[issue] = [...appConfig.purposeTemplates[issue]];
-  });
-  Object.keys(customTemplates).forEach((issue) => {
-    if (!result[issue]) {
-      result[issue] = [];
-    }
-    customTemplates[issue].forEach((item) => {
-      if (!result[issue].includes(item)) {
-        result[issue].push(item);
+  const allIssues = new Set([
+    ...Object.keys(appConfig.purposeTemplates),
+    ...Object.keys(custom),
+  ]);
+
+  allIssues.forEach((issue) => {
+    const builtIn = appConfig.purposeTemplates[issue] || [];
+    const userCustom = custom[issue] || [];
+    const issueFavorites = favorites[issue] || [];
+    const issueRecent = recent[issue] || {};
+
+    const merged = [];
+    const seen = new Set();
+
+    [...builtIn, ...userCustom].forEach((item) => {
+      if (!seen.has(item)) {
+        seen.add(item);
+        merged.push(item);
       }
     });
+
+    merged.sort((a, b) => {
+      const aFav = issueFavorites.includes(a) ? 1 : 0;
+      const bFav = issueFavorites.includes(b) ? 1 : 0;
+      if (aFav !== bFav) return bFav - aFav;
+
+      const aRecent = issueRecent[a] || 0;
+      const bRecent = issueRecent[b] || 0;
+      if (aRecent !== bRecent) return bRecent - aRecent;
+
+      const aBuiltIn = builtIn.includes(a) ? 0 : 1;
+      const bBuiltIn = builtIn.includes(b) ? 0 : 1;
+      if (aBuiltIn !== bBuiltIn) return aBuiltIn - bBuiltIn;
+
+      return 0;
+    });
+
+    result[issue] = merged;
   });
+
   return result;
 }
 
@@ -955,7 +1054,7 @@ function App() {
   const [importText, setImportText] = useState('');
   const [importResult, setImportResult] = useState(null);
   const [selectedCaseName, setSelectedCaseName] = useState('');
-  const [customTemplates, setCustomTemplates] = useState(loadTemplates);
+  const [templateData, setTemplateData] = useState(loadTemplates);
   const [showTemplatePanel, setShowTemplatePanel] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [exportConfig, setExportConfig] = useState({
@@ -1185,21 +1284,29 @@ function App() {
 
   function applyTemplate(purpose) {
     setForm({ ...form, purpose });
+    const issue = form.issue || appConfig.defaultValues.issue;
+    const next = recordRecentUse(templateData, issue, purpose);
+    setTemplateData(next);
   }
 
   function handleSaveTemplate() {
     if (!form.purpose || !form.purpose.trim()) return;
     const issue = form.issue || appConfig.defaultValues.issue;
-    const next = addCustomTemplate(customTemplates, issue, form.purpose.trim());
-    setCustomTemplates(next);
+    const next = addCustomTemplate(templateData, issue, form.purpose.trim());
+    setTemplateData(next);
   }
 
   function handleRemoveTemplate(issue, purpose) {
-    const next = removeCustomTemplate(customTemplates, issue, purpose);
-    setCustomTemplates(next);
+    const next = removeCustomTemplate(templateData, issue, purpose);
+    setTemplateData(next);
   }
 
-  const allTemplates = useMemo(() => getAllTemplates(customTemplates), [customTemplates]);
+  function handleToggleFavorite(issue, purpose) {
+    const next = toggleFavorite(templateData, issue, purpose);
+    setTemplateData(next);
+  }
+
+  const allTemplates = useMemo(() => getAllTemplates(templateData), [templateData]);
   const currentTemplates = allTemplates[form.issue] || [];
 
   const allIssues = useMemo(() => {
@@ -2795,28 +2902,65 @@ function App() {
                       </div>
                       {currentTemplates.length > 0 ? (
                         <div className="template-list">
-                          {currentTemplates.map((template, index) => (
-                            <div key={index} className="template-item">
-                              <button
-                                type="button"
-                                className="template-text"
-                                onClick={() => applyTemplate(template)}
-                                title="点击填入"
-                              >
-                                {template}
-                              </button>
-                              {!isBuiltInTemplate(form.issue, template) && (
-                                <button
-                                  type="button"
-                                  className="template-delete-btn"
-                                  onClick={() => handleRemoveTemplate(form.issue, template)}
-                                  title="删除模板"
-                                >
-                                  <X size={12} />
-                                </button>
-                              )}
-                            </div>
-                          ))}
+                          {(() => {
+                            const currentIssue = form.issue;
+                            const favoriteTemplates = currentTemplates.filter((t) => isFavorite(templateData, currentIssue, t));
+                            const otherTemplates = currentTemplates.filter((t) => !isFavorite(templateData, currentIssue, t));
+                            const renderItem = (template) => {
+                              const fav = isFavorite(templateData, currentIssue, template);
+                              return (
+                                <div key={template} className={`template-item ${fav ? 'is-favorite' : ''}`}>
+                                  <button
+                                    type="button"
+                                    className={`template-fav-btn ${fav ? 'active' : ''}`}
+                                    onClick={() => handleToggleFavorite(currentIssue, template)}
+                                    title={fav ? '取消收藏' : '收藏'}
+                                  >
+                                    <Star size={14} fill={fav ? '#f59e0b' : 'none'} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="template-text"
+                                    onClick={() => applyTemplate(template)}
+                                    title="点击填入"
+                                  >
+                                    {template}
+                                  </button>
+                                  {!isBuiltInTemplate(currentIssue, template) && (
+                                    <button
+                                      type="button"
+                                      className="template-delete-btn"
+                                      onClick={() => handleRemoveTemplate(currentIssue, template)}
+                                      title="删除模板"
+                                    >
+                                      <X size={12} />
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            };
+                            return (
+                              <>
+                                {favoriteTemplates.length > 0 && (
+                                  <div className="template-group">
+                                    <div className="template-group-label">
+                                      <Star size={12} fill="#f59e0b" />
+                                      收藏模板
+                                    </div>
+                                    {favoriteTemplates.map(renderItem)}
+                                  </div>
+                                )}
+                                {otherTemplates.length > 0 && (
+                                  <div className="template-group">
+                                    {favoriteTemplates.length > 0 && (
+                                      <div className="template-group-label">其他模板</div>
+                                    )}
+                                    {otherTemplates.map(renderItem)}
+                                  </div>
+                                )}
+                              </>
+                            );
+                          })()}
                         </div>
                       ) : (
                         <p className="template-empty">暂无模板，请先选择争议点或添加自定义模板</p>

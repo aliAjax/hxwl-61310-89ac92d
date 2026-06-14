@@ -890,9 +890,30 @@ textarea { min-height: 76px; resize: vertical; }
 .template-list {
   display: grid;
   gap: 6px;
-  max-height: 200px;
+  max-height: 280px;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.template-group {
+  display: grid;
+  gap: 6px;
+}
+
+.template-group + .template-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #e5e7eb;
+}
+
+.template-group-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  padding: 0 2px 2px;
 }
 
 .template-item {
@@ -908,6 +929,34 @@ textarea { min-height: 76px; resize: vertical; }
 
 .template-item:hover {
   border-color: var(--accent);
+}
+
+.template-item.is-favorite {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.template-fav-btn {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #9ca3af;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.template-fav-btn:hover {
+  background: #fef3c7;
+  color: #f59e0b;
+}
+
+.template-fav-btn.active {
+  color: #f59e0b;
 }
 
 .template-text {
