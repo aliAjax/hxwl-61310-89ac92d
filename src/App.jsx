@@ -1245,7 +1245,7 @@ function App() {
   }
 
   useEffect(() => {
-    if (selected && filteredRecords.length > 0) {
+    if (selected) {
       const stillVisible = filteredRecords.some((r) => r.id === selected.id);
       if (!stillVisible) {
         setSelected(null);
@@ -1542,19 +1542,18 @@ function App() {
 
   const wbExportData = useMemo(() => {
     if (!workbenchCase) return [];
-    let data = records.filter((item) => item.caseName === workbenchCase);
-    return data;
-  }, [records, workbenchCase]);
+    return wbFilteredRecords;
+  }, [wbFilteredRecords, workbenchCase]);
 
   const wbDirectory = useMemo(() => {
     if (!workbenchCase) return {};
-    const visibleRecords = getProcessedRecords(wbRecords, viewMode);
+    const visibleRecords = wbFilteredDisplayRecords;
     return visibleRecords.reduce((acc, item) => {
       const key = item.issue || '未分类';
       (acc[key] ||= []).push(item);
       return acc;
     }, {});
-  }, [wbRecords, viewMode, workbenchCase]);
+  }, [wbFilteredDisplayRecords, workbenchCase]);
 
   const wbStats = useMemo(() => {
     if (!workbenchCase) return null;
