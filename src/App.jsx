@@ -1252,6 +1252,506 @@ const SCHEMA_VERSIONS = {
   1: { label: 'v1（初始版本化）', description: '引入schema版本号，数据包裹为版本化对象，增加createdAt时间戳', fields: [...ALL_FIELDS, 'createdAt'] },
 };
 
+const WORK_PACKAGE_VERSION = 1;
+const WORK_PACKAGE_TYPE = 'hxwl-case-work-package';
+
+const WORK_PACKAGE_EXPORT_SECTIONS = [
+  { key: 'records', label: '证据材料', desc: '案件关联的证据记录和时间线', icon: FileSpreadsheet },
+  { key: 'customIssues', label: '自定义争议点', desc: '该案件下用户自定义的争议点', icon: Target },
+  { key: 'purposeTemplates', label: '证明目的模板', desc: '该案件争议点关联的自定义模板', icon: Bookmark },
+  { key: 'tasks', label: '补强任务', desc: '该案件关联的补强任务', icon: AlertTriangle },
+  { key: 'factNodes', label: '事实节点/时间线', desc: '该案件的事实节点和证据链', icon: GitBranch },
+];
+
+function buildWorkPackage(caseName, allRecords, allTemplates, allCustomIssues, allTasks, allFactNodes, selectedSections = WORK_PACKAGE_EXPORT_SECTIONS.map(s => s.key)) {
+  const caseRecords = allRecords.filter(r => r.caseName === caseName);
+  const caseRecordIds = new Set(caseRecords.map(r => r.id));
+
+  const caseCustomIssues = {};
+  if (selectedSections.includes('customIssues')) {
+    if (allCustomIssues[caseName]) {
+      caseCustomIssues[caseName] = allCustomIssues[caseName];
+    }
+  }
+
+  const casePurposeTemplates = { custom: {}, favorites: {}, recent: {} };
+  if (selectedSections.includes('purposeTemplates')) {
+    const caseIssueSet = new Set([
+      ...(caseCustomIssues[caseName] || []),
+      ...caseRecords.map(r => r.issue).filter(Boolean)
+    ]);
+    caseIssueSet.forEach(issue => {
+      if (allTemplates.custom?.[issue]) casePurposeTemplates.custom[issue] = allTemplates.custom[issue];
+      if (allTemplates.favorites?.[issue]) casePurposeTemplates.favorites[issue] = allTemplates.favorites[issue];
+      if (allTemplates.recent?.[issue]) casePurposeTemplates.recent[issue] = allTemplates.recent[issue];
+    });
+  }
+
+  let caseTasks = [];
+  if (selectedSections.includes('tasks')) {
+    caseTasks = allTasks.filter(t =>
+      t.caseName === caseName ||
+      (t.evidenceId && caseRecordIds.has(t.evidenceId))
+    );
+  }
+
+  let caseFactNodes = [];
+  if (selectedSections.includes('factNodes')) {
+    caseFactNodes = allFactNodes.filter(n => n.caseName === caseName);
+  }
+
+  return {
+    _type: WORK_PACKAGE_TYPE,
+    _packageVersion: WORK_PACKAGE_VERSION,
+    _schemaVersion: CURRENT_SCHEMA_VERSION,
+    _exportedAt: new Date().toISOString(),
+    _exportedBy: navigator.userAgent ? '浏览器客户端' : '未知',
+    caseName,
+    _sections: selectedSections,
+    _stats: {
+      recordCount: caseRecords.length,
+      customIssueCount: caseCustomIssues[caseName]?.length || 0,
+      templateIssueCount: Object.keys(casePurposeTemplates.custom).length,
+      taskCount: caseTasks.length,
+      factNodeCount: caseFactNodes.length,
+    },
+    records: caseRecords,
+    customIssues: caseCustomIssues,
+    purposeTemplates: casePurposeTemplates,
+    tasks: caseTasks,
+    factNodes: caseFactNodes,
+  };
+}
+
+function downloadWorkPackage(workPackage) {
+  const safeCaseName = workPackage.caseName.replace(/[\\/:*?"<>|]/g, '_');
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const fileName = `案件工作包_${safeCaseName}_${dateStr}.json`;
+  const blob = new Blob([JSON.stringify(workPackage, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  a.click();
+  URL.revokeObjectURL(url);
+  return fileName;
+}
+
+function parseWorkPackage(rawText) {
+  if (!rawText || !rawText.trim()) {
+    return { valid: false, error: '工作包内容为空' };
+  }
+  let data;
+  try {
+    data = JSON.parse(rawText);
+  } catch (e) {
+    return { valid: false, error: '无法解析为有效JSON：' + e.message };
+  }
+  if (!data || data._type !== WORK_PACKAGE_TYPE) {
+    return { valid: false, error: '不是合法的案件工作包文件（缺少_type标识）' };
+  }
+  if (typeof data._packageVersion !== 'number') {
+    return { valid: false, error: '工作包版本号缺失' };
+  }
+  if (data._packageVersion > WORK_PACKAGE_VERSION) {
+    return { valid: false, error: `工作包版本 v${data._packageVersion} 高于当前支持版本 v${WORK_PACKAGE_VERSION}，请升级应用` };
+  }
+  if (typeof data._schemaVersion !== 'number') {
+    return { valid: false, error: '数据schema版本缺失' };
+  }
+  if (!data.caseName || !String(data.caseName).trim()) {
+    return { valid: false, error: '工作包未指定案件名称' };
+  }
+  if (!Array.isArray(data.records)) {
+    return { valid: false, error: '工作包证据记录格式错误' };
+  }
+  if (data._schemaVersion < CURRENT_SCHEMA_VERSION) {
+    const migrationResult = runMigrations(data.records, data._schemaVersion, CURRENT_SCHEMA_VERSION);
+    if (!migrationResult.success) {
+      return { valid: false, error: '工作包数据迁移失败：' + (migrationResult.steps.find(s => s.status === 'failed')?.error || '未知错误') };
+    }
+    data.records = ensureRecordIntegrity(migrationResult.records);
+    data._schemaVersion = CURRENT_SCHEMA_VERSION;
+  } else {
+    data.records = ensureRecordIntegrity(data.records);
+  }
+  if (data._packageVersion < WORK_PACKAGE_VERSION) {
+    if (!data.customIssues) data.customIssues = {};
+    if (!data.purposeTemplates) data.purposeTemplates = { custom: {}, favorites: {}, recent: {} };
+    if (!data.tasks) data.tasks = [];
+    if (!data.factNodes) data.factNodes = [];
+    if (!data._sections) data._sections = WORK_PACKAGE_EXPORT_SECTIONS.map(s => s.key);
+  }
+  return { valid: true, data };
+}
+
+function computeRecordHash(record) {
+  const { id, caseName, evidence, source, date, purpose, issue, level, status } = record;
+  return JSON.stringify({ id, caseName, evidence, source, date, purpose, issue, level, status });
+}
+
+function recordsEqual(a, b) {
+  if (!a || !b) return false;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    if (k === 'timeline' || k === 'createdAt' || k.startsWith('_')) continue;
+    const va = a[k];
+    const vb = b[k];
+    if (typeof va === 'object' && typeof vb === 'object' && va !== null && vb !== null) {
+      if (JSON.stringify(va) !== JSON.stringify(vb)) return false;
+    } else if (va !== vb) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function detectWorkPackageConflicts(workPackageData, localRecords, localTemplates, localCustomIssues, localTasks, localFactNodes) {
+  const { caseName, records: wpRecords, customIssues: wpCustomIssues, purposeTemplates: wpTemplates, tasks: wpTasks, factNodes: wpFactNodes } = workPackageData;
+
+  const localIdMap = new Map(localRecords.map(r => [r.id, r]));
+  const localCaseEvidenceMap = new Map(localRecords.filter(r => r.caseName === caseName).map(r => [`${r.caseName}||${r.evidence}`, r]));
+
+  const recordConflicts = [];
+  const recordAdditions = [];
+  wpRecords.forEach(wpRec => {
+    let localById = wpRec.id && localIdMap.get(wpRec.id);
+    const key = `${wpRec.caseName}||${wpRec.evidence}`;
+    const localByContent = localCaseEvidenceMap.get(key);
+    const localMatch = localById || localByContent;
+    if (!localMatch) {
+      recordAdditions.push({ type: 'add', item: wpRec, matchKey: localById ? 'id' : (localByContent ? 'content' : 'none') });
+    } else {
+      if (recordsEqual(wpRec, localMatch)) {
+      } else {
+        const fieldDiffs = {};
+        const allKeys = new Set([...Object.keys(wpRec), ...Object.keys(localMatch)]);
+        allKeys.forEach(k => {
+          if (k === 'timeline' || k === 'createdAt' || k.startsWith('_')) return;
+          const va = wpRec[k];
+          const vb = localMatch[k];
+          const sa = typeof va === 'object' ? JSON.stringify(va) : String(va ?? '');
+          const sb = typeof vb === 'object' ? JSON.stringify(vb) : String(vb ?? '');
+          if (sa !== sb) {
+            fieldDiffs[k] = { incoming: va, local: vb };
+          }
+        });
+        recordConflicts.push({
+          type: 'conflict',
+          incoming: wpRec,
+          local: localMatch,
+          matchKey: localById ? 'id' : 'content',
+          fieldDiffs,
+          resolution: 'ask',
+        });
+      }
+    }
+  });
+
+  const localCaseRecords = localRecords.filter(r => r.caseName === caseName);
+  const wpRecordSet = new Set(wpRecords.map(r => r.id));
+  const wpCaseEvidenceSet = new Set(wpRecords.map(r => `${r.caseName}||${r.evidence}`));
+  const recordLocalsOnly = localCaseRecords.filter(r => !wpRecordSet.has(r.id) && !wpCaseEvidenceSet.has(`${r.caseName}||${r.evidence}`));
+
+  const localIssueSet = new Set(localCustomIssues[caseName] || []);
+  const wpIssueSet = new Set(wpCustomIssues[caseName] || []);
+  const customIssueConflicts = [];
+  wpIssueSet.forEach(issue => {
+    if (!localIssueSet.has(issue)) {
+      customIssueConflicts.push({ type: 'add', item: issue });
+    }
+  });
+
+  const customIssueLocalsOnly = [...localIssueSet].filter(i => !wpIssueSet.has(i));
+
+  const templateConflicts = [];
+  const wpCustom = wpTemplates.custom || {};
+  const localCustom = localTemplates.custom || {};
+  Object.entries(wpCustom).forEach(([issue, templates]) => {
+    const localTemps = localCustom[issue] || [];
+    const localTempSet = new Set(localTemps);
+    templates.forEach(t => {
+      if (!localTempSet.has(t)) {
+        templateConflicts.push({ type: 'add', issue, item: t });
+      }
+    });
+  });
+
+  const localTaskIdMap = new Map(localTasks.map(t => [t.id, t]));
+  const taskConflicts = [];
+  const taskAdditions = [];
+  wpTasks.forEach(wpTask => {
+    const localMatch = wpTask.id && localTaskIdMap.get(wpTask.id);
+    if (!localMatch) {
+      taskAdditions.push({ type: 'add', item: wpTask });
+    } else if (!recordsEqual(wpTask, localMatch)) {
+    } else {
+      const fieldDiffs = {};
+      const keys = new Set([...Object.keys(wpTask), ...Object.keys(localMatch)]);
+      keys.forEach(k => {
+        if (k === 'timeline' || k === 'createdAt' || k.startsWith('_')) return;
+        const va = wpTask[k];
+        const vb = localMatch[k];
+        if (JSON.stringify(va ?? '') !== JSON.stringify(vb ?? '')) {
+          fieldDiffs[k] = { incoming: va, local: vb };
+        }
+      });
+      if (Object.keys(fieldDiffs).length > 0) {
+        taskConflicts.push({
+          type: 'conflict',
+          incoming: wpTask,
+          local: localMatch,
+          fieldDiffs,
+          resolution: 'ask',
+        });
+      }
+    }
+  });
+
+  const localFactIdMap = new Map(localFactNodes.map(n => [n.id, n]));
+  const factNodeConflicts = [];
+  const factNodeAdditions = [];
+  wpFactNodes.forEach(wpNode => {
+    const localMatch = wpNode.id && localFactIdMap.get(wpNode.id);
+    if (!localMatch) {
+      factNodeAdditions.push({ type: 'add', item: wpNode });
+    } else if (!recordsEqual(wpNode, localMatch)) {
+      const fieldDiffs = {};
+      const keys = new Set([...Object.keys(wpNode), ...Object.keys(localMatch)]);
+      keys.forEach(k => {
+        if (k === 'createdAt' || k.startsWith('_')) return;
+        const va = wpNode[k];
+        const vb = localMatch[k];
+        if (JSON.stringify(va ?? '') !== JSON.stringify(vb ?? '')) {
+          fieldDiffs[k] = { incoming: va, local: vb };
+        }
+      });
+      if (Object.keys(fieldDiffs).length > 0) {
+        factNodeConflicts.push({
+          type: 'conflict',
+          incoming: wpNode,
+          local: localMatch,
+          fieldDiffs,
+          resolution: 'ask',
+        });
+      }
+    }
+  });
+
+  return {
+    records: { additions: recordAdditions, conflicts: recordConflicts, localsOnly: recordLocalsOnly },
+    customIssues: { additions: customIssueConflicts, localsOnly: customIssueLocalsOnly },
+    purposeTemplates: { additions: templateConflicts },
+    tasks: { additions: taskAdditions, conflicts: taskConflicts },
+    factNodes: { additions: factNodeAdditions, conflicts: factNodeConflicts },
+  };
+}
+
+function applyWorkPackageMerge(workPackageData, resolutions, localRecords, localTemplates, localCustomIssues, localTasks, localFactNodes) {
+  const { caseName, records: wpRecords, customIssues: wpCustomIssues, purposeTemplates: wpTemplates, tasks: wpTasks, factNodes: wpFactNodes } = workPackageData;
+
+  let finalRecords = [...localRecords];
+  const wpIdToResolution = new Map();
+  resolutions.records.forEach(r => {
+    const key = r.matchKey === 'content' ? `content:${r.incoming?.caseName || r.local?.caseName}||${r.incoming?.evidence || r.local?.evidence}` : `id:${r.incoming?.id || r.local?.id}`;
+    wpIdToResolution.set(key, r.resolution);
+  });
+
+  const processedRecordIds = new Set();
+  const localIdMap = new Map(localRecords.map(r => [r.id, r]));
+  const localCaseEvidenceMap = new Map(localRecords.filter(r => r.caseName === caseName).map(r => [`${r.caseName}||${r.evidence}`, r]));
+
+  resolutions.records.forEach(conflict => {
+    const localRec = conflict.local;
+    const incoming = conflict.incoming;
+    if (!localRec) return;
+    const idx = finalRecords.findIndex(r => r.id === localRec.id);
+    if (idx === -1) return;
+    if (conflict.resolution === 'keepLocal') {
+      processedRecordIds.add(localRec.id);
+    } else if (conflict.resolution === 'useIncoming') {
+      finalRecords[idx] = {
+        ...incoming,
+        id: localRec.id,
+        createdAt: localRec.createdAt,
+        timeline: [
+          ...(localRec.timeline || []),
+          { status: incoming.status || localRec.status || '工作包合并', at: today, by: '工作包导入（采用导入）' }
+        ],
+      };
+      processedRecordIds.add(localRec.id);
+    } else if (conflict.resolution === 'mergeFields' && conflict.fieldResolutions) {
+      const merged = { ...localRec };
+      Object.entries(conflict.fieldResolutions || {}).forEach(([field, choice]) => {
+        if (choice === 'incoming') {
+          merged[field] = incoming[field];
+        }
+      });
+      merged.timeline = [
+        ...(localRec.timeline || []),
+        { status: merged.status || localRec.status, at: today, by: '工作包导入（逐字段合并' }
+      ];
+      finalRecords[idx] = merged;
+      processedRecordIds.add(localRec.id);
+    }
+  });
+
+  wpRecords.forEach(wpRec => {
+    const localById = wpRec.id && localIdMap.get(wpRec.id);
+    const key = `${wpRec.caseName}||${wpRec.evidence}`;
+    const localByContent = localCaseEvidenceMap.get(key);
+    const localMatch = localById || localByContent;
+    const matchType = localById ? 'id' : (localByContent ? 'content' : 'none');
+    const resKey = matchType === 'content' ? `content:${key}` : `id:${localMatch?.id || wpRec.id}`;
+    const resolution = wpIdToResolution.get(resKey);
+    if (!localMatch) {
+      if (resolution !== 'skip') {
+        finalRecords.push({
+          ...wpRec,
+          id: wpRec.id || uid(),
+          timeline: [
+            ...(wpRec.timeline || []),
+            { status: wpRec.status || appConfig.primaryStatus, at: today, by: '工作包导入（新增）' }
+          ],
+          createdAt: wpRec.createdAt || new Date().toISOString(),
+        });
+      }
+    } else if (matchType === 'content' && !processedRecordIds.has(localMatch.id)) {
+      const idx = finalRecords.findIndex(r => r.id === localMatch.id);
+      if (idx !== -1) {
+        if (resolution === 'useIncoming') {
+          finalRecords[idx] = {
+            ...wpRec,
+            id: localMatch.id,
+            createdAt: localMatch.createdAt,
+            timeline: [
+              ...(localMatch.timeline || []),
+              { status: wpRec.status || localMatch.status, at: today, by: '工作包导入（采用导入）' }
+            ],
+          };
+        } else if (resolution === 'mergeFields' && resolution && resolution.fieldResolutions) {
+          const merged = { ...localMatch };
+          Object.entries(resolution.fieldResolutions || {}).forEach(([field, choice]) => {
+            if (choice === 'incoming') {
+              merged[field] = wpRec[field];
+            }
+          });
+          merged.timeline = [
+            ...(localMatch.timeline || []),
+            { status: merged.status, at: today, by: '工作包导入（逐字段合并）' }
+          ];
+          finalRecords[idx] = merged;
+        }
+        processedRecordIds.add(localMatch.id);
+      }
+    }
+  });
+
+  let finalCustomIssues = { ...localCustomIssues };
+  if (wpCustomIssues[caseName]) {
+    const existing = new Set(finalCustomIssues[caseName] || []);
+    const toAdd = [];
+    wpCustomIssues[caseName].forEach(issue => {
+      const res = resolutions.customIssues.find(r => r.item === issue);
+      if (!existing.has(issue) && (!res || res.resolution !== 'skip')) {
+        toAdd.push(issue);
+      }
+    });
+    if (toAdd.length > 0) {
+      finalCustomIssues[caseName] = [...existing, ...toAdd];
+    }
+  }
+
+  let finalTemplates = { custom: { ...localTemplates.custom }, favorites: { ...localTemplates.favorites }, recent: { ...localTemplates.recent } };
+  Object.entries(wpTemplates.custom || {}).forEach(([issue, templates]) => {
+    const existing = new Set(finalTemplates.custom[issue] || []);
+    const toAdd = [];
+    templates.forEach(t => {
+      const res = resolutions.purposeTemplates.find(r => r.issue === issue && r.item === t);
+      if (!existing.has(t) && (!res || res.resolution !== 'skip')) {
+        toAdd.push(t);
+      }
+    });
+    if (toAdd.length > 0) {
+      finalTemplates.custom[issue] = [...existing, ...toAdd];
+    }
+  });
+  const wpFav = wpTemplates.favorites || {};
+  Object.entries(wpFav).forEach(([issue, favs]) => {
+    const existing = new Set(finalTemplates.favorites[issue] || []);
+    favs.forEach(f => { if (!existing.has(f)) existing.add(f); });
+    if (existing.size > 0) finalTemplates.favorites[issue] = [...existing];
+  });
+  const wpRecent = wpTemplates.recent || {};
+  Object.entries(wpRecent).forEach(([issue, recentMap]) => {
+    finalTemplates.recent[issue] = { ...(finalTemplates.recent[issue] || {}), ...recentMap };
+  });
+
+  let finalTasks = [...localTasks];
+  const localTaskIdMap = new Map(localTasks.map(t => [t.id, t]));
+  resolutions.tasks.forEach(conflict => {
+    const idx = finalTasks.findIndex(t => t.id === conflict.local?.id);
+    if (idx !== -1) {
+      if (conflict.resolution === 'keepLocal') {
+      } else if (conflict.resolution === 'useIncoming') {
+        finalTasks[idx] = {
+          ...conflict.incoming,
+          id: conflict.local.id,
+          createdAt: conflict.local.createdAt,
+        };
+      }
+    }
+  });
+  wpTasks.forEach(wpTask => {
+    if (!wpTask.id || !localTaskIdMap.has(wpTask.id)) {
+      const hasConflict = resolutions.tasks.some(t => t.local?.id === wpTask.id);
+      if (!hasConflict) {
+        finalTasks.push({
+          ...wpTask,
+          id: wpTask.id || uid(),
+          createdAt: wpTask.createdAt || new Date().toISOString(),
+        });
+      }
+    }
+  });
+
+  let finalFactNodes = [...localFactNodes];
+  const localFactIdMap = new Map(localFactNodes.map(n => [n.id, n]));
+  resolutions.factNodes.forEach(conflict => {
+    const idx = finalFactNodes.findIndex(n => n.id === conflict.local?.id);
+    if (idx !== -1) {
+      if (conflict.resolution === 'keepLocal') {
+      } else if (conflict.resolution === 'useIncoming') {
+        finalFactNodes[idx] = {
+          ...conflict.incoming,
+          id: conflict.local.id,
+          createdAt: conflict.local.createdAt,
+        };
+      }
+    }
+  });
+  wpFactNodes.forEach(wpNode => {
+    if (!wpNode.id || !localFactIdMap.has(wpNode.id)) {
+      const hasConflict = resolutions.factNodes.some(n => n.local?.id === wpNode.id);
+      if (!hasConflict) {
+        finalFactNodes.push({
+          ...wpNode,
+          id: wpNode.id || uid(),
+          createdAt: wpNode.createdAt || new Date().toISOString(),
+        });
+      }
+    }
+  });
+
+  return {
+    records: ensureRecordIntegrity(finalRecords),
+    customIssues: finalCustomIssues,
+    purposeTemplates: finalTemplates,
+    tasks: finalTasks,
+    factNodes: finalFactNodes,
+  };
+}
+
 function parseCSV(text) {
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(line => line.trim());
   if (lines.length === 0) return { headers: [], rows: [] };
@@ -1481,11 +1981,23 @@ function App() {
   const [dragOverNodeId, setDragOverNodeId] = useState(null);
   const [factNodeSource, setFactNodeSource] = useState(null);
 
+  const [wpMode, setWpMode] = useState('export');
+  const [wpExportCaseName, setWpExportCaseName] = useState('');
+  const [wpExportSections, setWpExportSections] = useState(new Set(WORK_PACKAGE_EXPORT_SECTIONS.map(s => s.key)));
+  const [wpExportStats, setWpExportStats] = useState(null);
+  const [wpImportText, setWpImportText] = useState('');
+  const [wpImportParseResult, setWpImportParseResult] = useState(null);
+  const [wpConflictAnalysis, setWpConflictAnalysis] = useState(null);
+  const [wpResolutions, setWpResolutions] = useState({ records: [], customIssues: [], purposeTemplates: [], tasks: [], factNodes: [] });
+  const [wpMergeSection, setWpMergeSection] = useState('records');
+  const [wpMergeStatus, setWpMergeStatus] = useState(null);
+
   const DATA_MGMT_TABS = [
     { key: 'version', label: '版本信息', icon: Database },
     { key: 'history', label: '迁移历史', icon: History },
     { key: 'backup', label: '备份导入', icon: Download },
     { key: 'recovery', label: '恢复', icon: RotateCcw },
+    { key: 'workpackage', label: '案件工作包', icon: Briefcase },
   ];
 
   const WORKBENCH_TABS = [
@@ -2581,6 +3093,16 @@ function App() {
     setBackupImportText('');
     setBackupImportAnalysis(null);
     setRollbackStatus(null);
+    setWpMode('export');
+    setWpExportCaseName(caseNames[0] || '');
+    setWpExportSections(new Set(WORK_PACKAGE_EXPORT_SECTIONS.map(s => s.key)));
+    setWpExportStats(null);
+    setWpImportText('');
+    setWpImportParseResult(null);
+    setWpConflictAnalysis(null);
+    setWpResolutions({ records: [], customIssues: [], purposeTemplates: [], tasks: [], factNodes: [] });
+    setWpMergeSection('records');
+    setWpMergeStatus(null);
   }
 
   function closeDataMgmt() {
@@ -2589,6 +3111,233 @@ function App() {
     setBackupImportAnalysis(null);
     setMergeStrategy('addOnly');
     setRollbackStatus(null);
+    setWpMode('export');
+    setWpExportCaseName('');
+    setWpExportStats(null);
+    setWpImportText('');
+    setWpImportParseResult(null);
+    setWpConflictAnalysis(null);
+    setWpMergeStatus(null);
+  }
+
+  function toggleWpExportSection(key) {
+    const next = new Set(wpExportSections);
+    if (next.has(key)) {
+      next.delete(key);
+    } else {
+      next.add(key);
+    }
+    setWpExportSections(next);
+  }
+
+  function computeWpExportStats() {
+    if (!wpExportCaseName) {
+      setWpExportStats(null);
+      return;
+    }
+    const sections = [...wpExportSections];
+    const wp = buildWorkPackage(wpExportCaseName, records, templateData, customIssues, tasks, factNodes, sections);
+    setWpExportStats(wp._stats);
+  }
+
+  useEffect(() => {
+    if (dataMgmtTab === 'workpackage' && wpMode === 'export') {
+      computeWpExportStats();
+    }
+  }, [wpExportCaseName, wpExportSections, dataMgmtTab, wpMode]);
+
+  function handleWpExport() {
+    if (!wpExportCaseName) {
+      alert('请选择要导出的案件');
+      return;
+    }
+    const sections = [...wpExportSections];
+    if (sections.length === 0) {
+      alert('请至少选择一项要导出的内容');
+      return;
+    }
+    const wp = buildWorkPackage(wpExportCaseName, records, templateData, customIssues, tasks, factNodes, sections);
+    const fileName = downloadWorkPackage(wp);
+    alert(`工作包已成功导出：${fileName}\n请将此文件发送给同事进行处理。`);
+  }
+
+  function handleWpImportFileUpload(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target.result;
+      handleWpImportTextChange(text);
+    };
+    reader.readAsText(file);
+    event.target.value = '';
+  }
+
+  function handleWpImportTextChange(value) {
+    setWpImportText(value);
+    const result = parseWorkPackage(value);
+    setWpImportParseResult(result);
+    setWpMergeStatus(null);
+    if (result.valid) {
+      const conflicts = detectWorkPackageConflicts(result.data, records, templateData, customIssues, tasks, factNodes);
+      setWpConflictAnalysis(conflicts);
+      const initialResolutions = {
+        records: conflicts.records.conflicts.map(c => ({
+          ...c,
+          resolution: 'ask',
+          fieldResolutions: {},
+        })),
+        customIssues: conflicts.customIssues.additions.map(a => ({ ...a, resolution: 'add' })),
+        purposeTemplates: conflicts.purposeTemplates.additions.map(a => ({ ...a, resolution: 'add' })),
+        tasks: conflicts.tasks.conflicts.map(c => ({ ...c, resolution: 'ask' })),
+        factNodes: conflicts.factNodes.conflicts.map(c => ({ ...c, resolution: 'ask' })),
+      };
+      setWpResolutions(initialResolutions);
+    } else {
+      setWpConflictAnalysis(null);
+    }
+  }
+
+  function setRecordResolution(index, resolution) {
+    const next = [...wpResolutions.records];
+    next[index] = { ...next[index], resolution };
+    if (resolution === 'mergeFields' && !next[index].fieldResolutions) {
+      next[index].fieldResolutions = {};
+    }
+    setWpResolutions({ ...wpResolutions, records: next });
+  }
+
+  function setFieldResolution(recordIndex, field, choice) {
+    const next = [...wpResolutions.records];
+    const current = next[recordIndex].fieldResolutions || {};
+    next[recordIndex] = {
+      ...next[recordIndex],
+      fieldResolutions: { ...current, [field]: choice }
+    };
+    setWpResolutions({ ...wpResolutions, records: next });
+  }
+
+  function setCustomIssueResolution(index, resolution) {
+    const next = [...wpResolutions.customIssues];
+    next[index] = { ...next[index], resolution };
+    setWpResolutions({ ...wpResolutions, customIssues: next });
+  }
+
+  function setTemplateResolution(index, resolution) {
+    const next = [...wpResolutions.purposeTemplates];
+    next[index] = { ...next[index], resolution };
+    setWpResolutions({ ...wpResolutions, purposeTemplates: next });
+  }
+
+  function setTaskResolution(index, resolution) {
+    const next = [...wpResolutions.tasks];
+    next[index] = { ...next[index], resolution };
+    setWpResolutions({ ...wpResolutions, tasks: next });
+  }
+
+  function setFactNodeResolution(index, resolution) {
+    const next = [...wpResolutions.factNodes];
+    next[index] = { ...next[index], resolution };
+    setWpResolutions({ ...wpResolutions, factNodes: next });
+  }
+
+  function batchSetRecordResolution(preset) {
+    const next = wpResolutions.records.map(r => ({ ...r, resolution: preset }));
+    setWpResolutions({ ...wpResolutions, records: next });
+  }
+
+  function batchSetTaskResolution(preset) {
+    const next = wpResolutions.tasks.map(r => ({ ...r, resolution: preset }));
+    setWpResolutions({ ...wpResolutions, tasks: next });
+  }
+
+  function batchSetFactNodeResolution(preset) {
+    const next = wpResolutions.factNodes.map(r => ({ ...r, resolution: preset }));
+    setWpResolutions({ ...wpResolutions, factNodes: next });
+  }
+
+  function batchSetCustomIssueResolution(preset) {
+    const next = wpResolutions.customIssues.map(r => ({ ...r, resolution: preset === 'add' ? 'add' : 'skip' }));
+    setWpResolutions({ ...wpResolutions, customIssues: next });
+  }
+
+  function batchSetTemplateResolution(preset) {
+    const next = wpResolutions.purposeTemplates.map(r => ({ ...r, resolution: preset === 'add' ? 'add' : 'skip' }));
+    setWpResolutions({ ...wpResolutions, purposeTemplates: next });
+  }
+
+  function confirmWorkPackageMerge() {
+    if (!wpImportParseResult?.valid || !wpConflictAnalysis) return;
+
+    const unresolvedRecords = wpResolutions.records.some(r => r.resolution === 'ask' || (r.resolution === 'mergeFields' && Object.keys(r.fieldDiffs || {}).some(f => !r.fieldResolutions?.[f])));
+    const unresolvedTasks = wpResolutions.tasks.some(r => r.resolution === 'ask');
+    const unresolvedFactNodes = wpResolutions.factNodes.some(r => r.resolution === 'ask');
+    if (unresolvedRecords || unresolvedTasks || unresolvedFactNodes) {
+      alert('请为所有冲突项选择处理方式');
+      return;
+    }
+
+    const snapshotResult = createSnapshot(records, CURRENT_SCHEMA_VERSION);
+
+    try {
+      const merged = applyWorkPackageMerge(
+        wpImportParseResult.data,
+        wpResolutions,
+        records,
+        templateData,
+        customIssues,
+        tasks,
+        factNodes
+      );
+
+      const addRecords = wpConflictAnalysis.records.additions.filter(a => {
+        const key = a.matchKey === 'content' ? `content:${a.item?.caseName}||${a.item?.evidence}` : `id:${a.item?.id}`;
+        const res = wpResolutions.records.find(r => {
+          const rkey = r.matchKey === 'content' ? `content:${r.incoming?.caseName || r.local?.caseName}||${r.incoming?.evidence || r.local?.evidence}` : `id:${r.incoming?.id || r.local?.id}`;
+          return rkey === key;
+        });
+        return !res || res.resolution !== 'skip';
+      });
+
+      const finalCount = merged.records.length;
+      const conflictUseInc = wpResolutions.records.filter(r => r.resolution === 'useIncoming' || r.resolution === 'mergeFields').length;
+      const conflictKeep = wpResolutions.records.filter(r => r.resolution === 'keepLocal').length;
+
+      persist(merged.records);
+      saveCustomIssues(merged.customIssues);
+      setCustomIssues(merged.customIssues);
+      saveTemplates(merged.purposeTemplates);
+      setTemplateData(merged.purposeTemplates);
+      saveTasks(merged.tasks);
+      setTasks(merged.tasks);
+      saveFactNodes(merged.factNodes);
+      setFactNodes(merged.factNodes);
+
+      if (snapshotResult.success) {
+        addMigrationRecord({
+          fromVersion: CURRENT_SCHEMA_VERSION,
+          toVersion: CURRENT_SCHEMA_VERSION,
+          timestamp: new Date().toISOString(),
+          status: 'success',
+          description: `案件工作包合并：${wpImportParseResult.data.caseName}（新增${addRecords.length}条，采用导入${conflictUseInc}条，保留本地${conflictKeep}条）`,
+          snapshotKey: snapshotResult.snapshotKey,
+          recordCount: finalCount,
+          importDetails: {
+            type: 'workPackage',
+            caseName: wpImportParseResult.data.caseName,
+            addRecords: addRecords.length,
+            conflictsResolved: wpResolutions.records.length,
+            useIncoming: conflictUseInc,
+            keepLocal: conflictKeep,
+          },
+        });
+      }
+
+      setWpMergeStatus({ success: true, message: `合并成功！新增${addRecords.length}条证据，处理${wpResolutions.records.length}个冲突，已自动创建合并前快照。` });
+    } catch (e) {
+      console.error(e);
+      setWpMergeStatus({ success: false, message: '合并失败：' + e.message });
+    }
   }
 
   function handleBackupTextChange(value) {
@@ -6654,6 +7403,678 @@ function App() {
                       </div>
                     );
                   })()}
+                </div>
+              )}
+
+              {dataMgmtTab === 'workpackage' && (
+                <div className="dm-workpackage-tab">
+                  {wpMergeStatus && (
+                    <div className={`dm-rollback-status ${wpMergeStatus.success ? 'success' : 'failed'}`}>
+                      {wpMergeStatus.success ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+                      <span>{wpMergeStatus.message}</span>
+                      <button type="button" onClick={() => setWpMergeStatus(null)}><X size={14} /></button>
+                    </div>
+                  )}
+
+                  <div className="wp-mode-switcher">
+                    <button
+                      type="button"
+                      className={`wp-mode-btn ${wpMode === 'export' ? 'active' : ''}`}
+                      onClick={() => { setWpMode('export'); setWpMergeStatus(null); }}
+                    >
+                      <Upload size={16} /> 导出工作包
+                    </button>
+                    <button
+                      type="button"
+                      className={`wp-mode-btn ${wpMode === 'import' ? 'active' : ''}`}
+                      onClick={() => { setWpMode('import'); setWpMergeStatus(null); }}
+                    >
+                      <Download size={16} /> 导入工作包
+                    </button>
+                  </div>
+
+                  {wpMode === 'export' ? (
+                    <div className="wp-export-section">
+                      <h3 className="dm-section-title">
+                        <Briefcase size={16} /> 案件工作包导出
+                      </h3>
+                      <p className="dm-backup-hint">
+                        选择案件和要打包的内容，导出后交给同事处理。对方处理完毕后，使用「导入工作包」合并结果。
+                      </p>
+
+                      <div className="wp-export-config">
+                        <label>
+                          <span><Briefcase size={14} /> 选择要导出的案件</span>
+                          <div className="export-select-wrap">
+                            <Briefcase size={16} />
+                            <select
+                              value={wpExportCaseName}
+                              onChange={(e) => setWpExportCaseName(e.target.value)}
+                            >
+                              <option value="">-- 请选择案件 --</option>
+                              {caseNames.map((name) => (
+                                <option key={name} value={name}>{name}</option>
+                              ))}
+                            </select>
+                            <ChevronDown size={16} />
+                          </div>
+                        </label>
+
+                        <div className="wp-sections-grid">
+                          <h4 className="wp-sections-title"><Layers size={14} /> 选择要打包的内容</h4>
+                          <div className="wp-section-options">
+                            {WORK_PACKAGE_EXPORT_SECTIONS.map((section) => {
+                              const Icon = section.icon;
+                              const checked = wpExportSections.has(section.key);
+                              return (
+                                <label
+                                  key={section.key}
+                                  className={`wp-section-option ${checked ? 'active' : ''}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() => toggleWpExportSection(section.key)}
+                                  />
+                                  <div className="wp-section-content">
+                                    <div className="wp-section-head">
+                                      <Icon size={16} />
+                                      <strong>{section.label}</strong>
+                                      {wpExportStats && (
+                                        <span className="wp-section-count">
+                                          {section.key === 'records' && `${wpExportStats.recordCount} 条`}
+                                          {section.key === 'customIssues' && `${wpExportStats.customIssueCount} 项`}
+                                          {section.key === 'purposeTemplates' && `${wpExportStats.templateIssueCount} 个争议点`}
+                                          {section.key === 'tasks' && `${wpExportStats.taskCount} 项`}
+                                          {section.key === 'factNodes' && `${wpExportStats.factNodeCount} 个`}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="wp-section-desc">{section.desc}</div>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {wpExportCaseName && wpExportStats && (
+                          <div className="wp-export-summary">
+                            <div className="summary-stat success">
+                              <div className="summary-icon ok"><CheckCircle2 size={16} /></div>
+                              <div>
+                                <span>证据记录</span>
+                                <strong>{wpExportStats.recordCount}</strong>
+                              </div>
+                            </div>
+                            {wpExportSections.has('customIssues') && (
+                              <div className="summary-stat">
+                                <div className="summary-icon info"><Target size={16} /></div>
+                                <div>
+                                  <span>自定义争议点</span>
+                                  <strong>{wpExportStats.customIssueCount}</strong>
+                                </div>
+                              </div>
+                            )}
+                            {wpExportSections.has('purposeTemplates') && (
+                              <div className="summary-stat">
+                                <div className="summary-icon info"><Bookmark size={16} /></div>
+                                <div>
+                                  <span>模板争议点</span>
+                                  <strong>{wpExportStats.templateIssueCount}</strong>
+                                </div>
+                              </div>
+                            )}
+                            {wpExportSections.has('tasks') && (
+                              <div className="summary-stat warning">
+                                <div className="summary-icon warn"><AlertTriangle size={16} /></div>
+                                <div>
+                                  <span>补强任务</span>
+                                  <strong>{wpExportStats.taskCount}</strong>
+                                </div>
+                              </div>
+                            )}
+                            {wpExportSections.has('factNodes') && (
+                              <div className="summary-stat">
+                                <div className="summary-icon info"><GitBranch size={16} /></div>
+                                <div>
+                                  <span>事实节点</span>
+                                  <strong>{wpExportStats.factNodeCount}</strong>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="dm-backup-actions">
+                        <button
+                          type="button"
+                          className="dm-action-btn primary"
+                          onClick={handleWpExport}
+                          disabled={!wpExportCaseName || wpExportSections.size === 0}
+                        >
+                          <Download size={16} /> 导出案件工作包
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="wp-import-section">
+                      <h3 className="dm-section-title">
+                        <Briefcase size={16} /> 导入同事处理后的工作包
+                      </h3>
+                      <p className="dm-backup-hint">
+                        上传同事返回的工作包文件，系统将自动检测与本地数据的差异，支持逐项选择合并策略。合并前会自动创建快照，可随时回滚。
+                      </p>
+
+                      <div className="dm-backup-upload">
+                        <div className="dm-backup-input-row">
+                          <label className="dm-file-upload-btn">
+                            <Upload size={16} />
+                            <span>选择工作包文件</span>
+                            <input type="file" accept=".json" onChange={handleWpImportFileUpload} style={{ display: 'none' }} />
+                          </label>
+                        </div>
+                        <textarea
+                          className="dm-backup-textarea"
+                          value={wpImportText}
+                          onChange={(e) => handleWpImportTextChange(e.target.value)}
+                          placeholder="粘贴工作包JSON内容，或点击上方按钮选择文件..."
+                          rows={4}
+                        />
+                      </div>
+
+                      {wpImportParseResult && !wpImportParseResult.valid && (
+                        <div className="dm-backup-error">
+                          <AlertCircle size={16} />
+                          <span>解析失败：{wpImportParseResult.error}</span>
+                        </div>
+                      )}
+
+                      {wpImportParseResult?.valid && wpConflictAnalysis && (
+                        <div className="wp-import-analysis">
+                          <h3 className="dm-section-title">
+                            <Eye size={16} /> 工作包预检结果：{wpImportParseResult.data.caseName}
+                          </h3>
+
+                          <div className="dm-analysis-stats">
+                            <div className="dm-analysis-stat">
+                              <Database size={16} />
+                              <div>
+                                <span>工作包版本</span>
+                                <strong>v{wpImportParseResult.data._packageVersion}</strong>
+                              </div>
+                            </div>
+                            <div className="dm-analysis-stat">
+                              <FileSpreadsheet size={16} />
+                              <div>
+                                <span>证据数</span>
+                                <strong>{wpConflictAnalysis.records.additions.length + wpConflictAnalysis.records.conflicts.length}</strong>
+                              </div>
+                            </div>
+                            <div className="dm-analysis-stat success">
+                              <Plus size={16} />
+                              <div>
+                                <span>新增</span>
+                                <strong>{wpConflictAnalysis.records.additions.length}</strong>
+                              </div>
+                            </div>
+                            <div className="dm-analysis-stat warning">
+                              <AlertTriangle size={16} />
+                              <div>
+                                <span>冲突</span>
+                                <strong>{wpConflictAnalysis.records.conflicts.length}</strong>
+                              </div>
+                            </div>
+                            {wpConflictAnalysis.records.localsOnly.length > 0 && (
+                              <div className="dm-analysis-stat">
+                                <Info size={16} />
+                                <div>
+                                  <span>本地新增</span>
+                                  <strong>{wpConflictAnalysis.records.localsOnly.length}</strong>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="wp-merge-tabs">
+                            {[
+                              { key: 'records', label: '证据材料', count: wpConflictAnalysis.records.conflicts.length + wpConflictAnalysis.records.additions.length, icon: FileSpreadsheet },
+                              { key: 'customIssues', label: '自定义争议点', count: wpConflictAnalysis.customIssues.additions.length, icon: Target },
+                              { key: 'purposeTemplates', label: '证明目的模板', count: wpConflictAnalysis.purposeTemplates.additions.length, icon: Bookmark },
+                              { key: 'tasks', label: '补强任务', count: wpConflictAnalysis.tasks.conflicts.length + wpConflictAnalysis.tasks.additions.length, icon: AlertTriangle },
+                              { key: 'factNodes', label: '事实节点', count: wpConflictAnalysis.factNodes.conflicts.length + wpConflictAnalysis.factNodes.additions.length, icon: GitBranch },
+                            ].map((tab) => {
+                              const Icon = tab.icon;
+                              return (
+                                <button
+                                  key={tab.key}
+                                  type="button"
+                                  className={`wp-merge-tab ${wpMergeSection === tab.key ? 'active' : ''}`}
+                                  onClick={() => setWpMergeSection(tab.key)}
+                                >
+                                  <Icon size={14} />
+                                  {tab.label}
+                                  {tab.count > 0 && <span className="wp-tab-count">{tab.count}</span>}
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <div className="wp-merge-content">
+                            {wpMergeSection === 'records' && (
+                              <div className="wp-records-merge">
+                                {wpConflictAnalysis.records.conflicts.length > 0 && (
+                                  <div className="wp-batch-actions">
+                                    <span className="wp-batch-label">批量设置证据冲突：</span>
+                                    <button type="button" className="ghost-btn small-btn" onClick={() => batchSetRecordResolution('keepLocal')}>
+                                      全部保留本地
+                                    </button>
+                                    <button type="button" className="ghost-btn small-btn" onClick={() => batchSetRecordResolution('useIncoming')}>
+                                      全部采用导入
+                                    </button>
+                                  </div>
+                                )}
+                                {wpConflictAnalysis.records.conflicts.length === 0 && wpConflictAnalysis.records.additions.length === 0 ? (
+                                  <div className="dm-empty">
+                                    <CheckCircle2 size={40} />
+                                    <p>证据数据无新增或冲突</p>
+                                    <p className="dm-empty-hint">该案件下的所有证据在本地与工作包中完全一致</p>
+                                  </div>
+                                ) : (
+                                  <>
+                                    {wpConflictAnalysis.records.conflicts.map((conflict, idx) => {
+                                      const res = wpResolutions.records[idx];
+                                      const matchLabel = conflict.matchKey === 'id' ? '（ID匹配）' : '（内容匹配）';
+                                      return (
+                                        <div key={`conflict-${idx}`} className={`wp-conflict-card ${res?.resolution && res.resolution !== 'ask' ? 'resolved' : ''}`}>
+                                          <div className="wp-conflict-header">
+                                            <div className="wp-conflict-title">
+                                              <AlertTriangle size={16} />
+                                              <strong>冲突 {idx + 1}{matchLabel}：</strong>
+                                              <span>{conflict.incoming?.caseName} - {conflict.incoming?.evidence}</span>
+                                            </div>
+                                            <span className={`wp-conflict-status ${res?.resolution || ''}`}>
+                                              {res?.resolution === 'keepLocal' && '保留本地'}
+                                              {res?.resolution === 'useIncoming' && '采用导入'}
+                                              {res?.resolution === 'mergeFields' && '逐字段合并'}
+                                              {(!res?.resolution || res.resolution === 'ask') && '待处理'}
+                                            </span>
+                                          </div>
+
+                                          <div className="wp-compare-grid">
+                                            <div className="wp-compare-col local">
+                                              <div className="wp-compare-col-header">
+                                                <span className="wp-col-tag local-tag">本地版本</span>
+                                                <span className="wp-col-status">{conflict.local?.status}</span>
+                                              </div>
+                                              {Object.entries(conflict.fieldDiffs).map(([field, diff]) => (
+                                                <div key={`local-${field}`} className="wp-field-row">
+                                                  <span className="wp-field-name">{appConfig.fields.find(f => f.key === field)?.label || field}</span>
+                                                  <span className="wp-field-value">{String(diff.local ?? '<空>')}</span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                            <div className="wp-compare-col incoming">
+                                              <div className="wp-compare-col-header">
+                                                <span className="wp-col-tag incoming-tag">导入版本</span>
+                                                <span className="wp-col-status">{conflict.incoming?.status}</span>
+                                              </div>
+                                              {Object.entries(conflict.fieldDiffs).map(([field, diff]) => (
+                                                <div key={`incoming-${field}`} className="wp-field-row">
+                                                  <span className="wp-field-name">{appConfig.fields.find(f => f.key === field)?.label || field}</span>
+                                                  <span className="wp-field-value">{String(diff.incoming ?? '<空>')}</span>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          </div>
+
+                                          <div className="wp-resolution-actions">
+                                            <div className="wp-resolution-radios">
+                                              <label>
+                                                <input type="radio" checked={res?.resolution === 'keepLocal'} onChange={() => setRecordResolution(idx, 'keepLocal')} />
+                                                <span>保留本地</span>
+                                              </label>
+                                              <label>
+                                                <input type="radio" checked={res?.resolution === 'useIncoming'} onChange={() => setRecordResolution(idx, 'useIncoming')} />
+                                                <span>采用导入</span>
+                                              </label>
+                                              <label>
+                                                <input type="radio" checked={res?.resolution === 'mergeFields'} onChange={() => setRecordResolution(idx, 'mergeFields')} />
+                                                <span>逐字段合并</span>
+                                              </label>
+                                            </div>
+                                            {res?.resolution === 'mergeFields' && (
+                                              <div className="wp-field-merger">
+                                                {Object.entries(conflict.fieldDiffs).map(([field, diff]) => (
+                                                  <div key={`merge-${field}`} className="wp-field-merge-row">
+                                                    <span className="wp-field-name">{appConfig.fields.find(f => f.key === field)?.label || field}</span>
+                                                    <div className="wp-field-merge-options">
+                                                      <label>
+                                                        <input
+                                                          type="radio"
+                                                          checked={res?.fieldResolutions?.[field] === 'local'}
+                                                          onChange={() => setFieldResolution(idx, field, 'local')}
+                                                        />
+                                                        <span>本地</span>
+                                                      </label>
+                                                      <label>
+                                                        <input
+                                                          type="radio"
+                                                          checked={res?.fieldResolutions?.[field] === 'incoming'}
+                                                          onChange={() => setFieldResolution(idx, field, 'incoming')}
+                                                        />
+                                                        <span>导入</span>
+                                                      </label>
+                                                    </div>
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+
+                                    {wpConflictAnalysis.records.additions.length > 0 && (
+                                      <div className="wp-additions-section">
+                                        <h4 className="wp-section-subtitle">
+                                          <Plus size={14} /> 新增证据 ({wpConflictAnalysis.records.additions.length}条)
+                                        </h4>
+                                        <div className="wp-additions-list">
+                                          {wpConflictAnalysis.records.additions.map((add, idx) => (
+                                            <div key={`add-${idx}`} className="wp-addition-item">
+                                              <div className="wp-addition-head">
+                                                <FileSpreadsheet size={14} />
+                                                <span className="wp-addition-case">{add.item.caseName}</span>
+                                                <span className="wp-addition-arrow">→</span>
+                                                <span className="wp-addition-evidence">{add.item.evidence}</span>
+                                                <span className="wp-addition-issue">{add.item.issue}</span>
+                                                <span className="wp-addition-status">{add.item.status}</span>
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                        <p className="hint"><Info size={12} /> 以上新增证据将自动添加到本案件下。</p>
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
+
+                            {wpMergeSection === 'customIssues' && (
+                              <div className="wp-simple-merge">
+                                {wpConflictAnalysis.customIssues.additions.length > 0 && (
+                                  <div className="wp-batch-actions">
+                                    <span className="wp-batch-label">批量设置：</span>
+                                    <button type="button" className="ghost-btn small-btn" onClick={() => batchSetCustomIssueResolution('add')}>全部添加</button>
+                                    <button type="button" className="ghost-btn small-btn" onClick={() => batchSetCustomIssueResolution('skip')}>全部跳过</button>
+                                  </div>
+                                )}
+                                {wpConflictAnalysis.customIssues.additions.length === 0 ? (
+                                  <div className="dm-empty">
+                                    <CheckCircle2 size={40} />
+                                    <p>自定义争议点无新增</p>
+                                  </div>
+                                ) : (
+                                  <div className="wp-simple-list">
+                                    {wpConflictAnalysis.customIssues.additions.map((item, idx) => {
+                                      const res = wpResolutions.customIssues[idx];
+                                      return (
+                                        <div key={`issue-${idx}`} className="wp-simple-item">
+                                          <div className="wp-simple-item-content">
+                                            <Target size={14} />
+                                            <span className="wp-simple-item-name">{item.item}</span>
+                                          </div>
+                                          <div className="wp-simple-item-actions">
+                                            <label>
+                                              <input type="radio" checked={res?.resolution === 'add'} onChange={() => setCustomIssueResolution(idx, 'add')} />
+                                              <span>添加</span>
+                                            </label>
+                                            <label>
+                                              <input type="radio" checked={res?.resolution === 'skip'} onChange={() => setCustomIssueResolution(idx, 'skip')} />
+                                              <span>跳过</span>
+                                            </label>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {wpMergeSection === 'purposeTemplates' && (
+                              <div className="wp-simple-merge">
+                                {wpConflictAnalysis.purposeTemplates.additions.length > 0 && (
+                                  <div className="wp-batch-actions">
+                                    <span className="wp-batch-label">批量设置：</span>
+                                    <button type="button" className="ghost-btn small-btn" onClick={() => batchSetTemplateResolution('add')}>全部添加</button>
+                                    <button type="button" className="ghost-btn small-btn" onClick={() => batchSetTemplateResolution('skip')}>全部跳过</button>
+                                  </div>
+                                )}
+                                {wpConflictAnalysis.purposeTemplates.additions.length === 0 ? (
+                                  <div className="dm-empty">
+                                    <CheckCircle2 size={40} />
+                                    <p>证明目的模板无新增</p>
+                                  </div>
+                                ) : (
+                                  <div className="wp-simple-list">
+                                    {wpConflictAnalysis.purposeTemplates.additions.map((item, idx) => {
+                                      const res = wpResolutions.purposeTemplates[idx];
+                                      return (
+                                        <div key={`tpl-${idx}`} className="wp-simple-item">
+                                          <div className="wp-simple-item-content">
+                                            <Bookmark size={14} />
+                                            <span className="wp-tpl-issue-tag">{item.issue}</span>
+                                            <span className="wp-simple-item-name">{item.item}</span>
+                                          </div>
+                                          <div className="wp-simple-item-actions">
+                                            <label>
+                                              <input type="radio" checked={res?.resolution === 'add'} onChange={() => setTemplateResolution(idx, 'add')} />
+                                              <span>添加</span>
+                                            </label>
+                                            <label>
+                                              <input type="radio" checked={res?.resolution === 'skip'} onChange={() => setTemplateResolution(idx, 'skip')} />
+                                              <span>跳过</span>
+                                            </label>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {wpMergeSection === 'tasks' && (
+                              <div className="wp-records-merge">
+                                {wpConflictAnalysis.tasks.conflicts.length > 0 && (
+                                  <div className="wp-batch-actions">
+                                    <span className="wp-batch-label">批量设置任务冲突：</span>
+                                    <button type="button" className="ghost-btn small-btn" onClick={() => batchSetTaskResolution('keepLocal')}>全部保留本地</button>
+                                    <button type="button" className="ghost-btn small-btn" onClick={() => batchSetTaskResolution('useIncoming')}>全部采用导入</button>
+                                  </div>
+                                )}
+                                {wpConflictAnalysis.tasks.conflicts.length === 0 && wpConflictAnalysis.tasks.additions.length === 0 ? (
+                                  <div className="dm-empty">
+                                    <CheckCircle2 size={40} />
+                                    <p>补强任务无新增或冲突</p>
+                                  </div>
+                                ) : (
+                                  <>
+                                    {wpConflictAnalysis.tasks.conflicts.map((conflict, idx) => {
+                                      const res = wpResolutions.tasks[idx];
+                                      return (
+                                        <div key={`tconflict-${idx}`} className={`wp-conflict-card ${res?.resolution && res.resolution !== 'ask' ? 'resolved' : ''}`}>
+                                          <div className="wp-conflict-header">
+                                            <div className="wp-conflict-title">
+                                              <AlertTriangle size={16} />
+                                              <strong>任务冲突 {idx + 1}：</strong>
+                                              <span>{conflict.local?.evidenceName || conflict.local?.issue}</span>
+                                            </div>
+                                            <span className={`wp-conflict-status ${res?.resolution || ''}`}>
+                                              {res?.resolution === 'keepLocal' && '保留本地'}
+                                              {res?.resolution === 'useIncoming' && '采用导入'}
+                                              {(!res?.resolution || res.resolution === 'ask') && '待处理'}
+                                            </span>
+                                          </div>
+                                          <div className="wp-compare-grid">
+                                            <div className="wp-compare-col local">
+                                              <div className="wp-compare-col-header">
+                                                <span className="wp-col-tag local-tag">本地版本</span>
+                                                <span className="wp-col-status">{conflict.local?.status}</span>
+                                              </div>
+                                              <div className="wp-field-row"><span className="wp-field-name">负责人</span><span className="wp-field-value">{conflict.local?.assignee || '-'}</span></div>
+                                              <div className="wp-field-row"><span className="wp-field-name">截止日期</span><span className="wp-field-value">{conflict.local?.deadline || '-'}</span></div>
+                                              <div className="wp-field-row"><span className="wp-field-name">补强原因</span><span className="wp-field-value">{conflict.local?.reason || '-'}</span></div>
+                                            </div>
+                                            <div className="wp-compare-col incoming">
+                                              <div className="wp-compare-col-header">
+                                                <span className="wp-col-tag incoming-tag">导入版本</span>
+                                                <span className="wp-col-status">{conflict.incoming?.status}</span>
+                                              </div>
+                                              <div className="wp-field-row"><span className="wp-field-name">负责人</span><span className="wp-field-value">{conflict.incoming?.assignee || '-'}</span></div>
+                                              <div className="wp-field-row"><span className="wp-field-name">截止日期</span><span className="wp-field-value">{conflict.incoming?.deadline || '-'}</span></div>
+                                              <div className="wp-field-row"><span className="wp-field-name">补强原因</span><span className="wp-field-value">{conflict.incoming?.reason || '-'}</span></div>
+                                            </div>
+                                          </div>
+                                          <div className="wp-resolution-actions">
+                                            <div className="wp-resolution-radios">
+                                              <label><input type="radio" checked={res?.resolution === 'keepLocal'} onChange={() => setTaskResolution(idx, 'keepLocal')} /><span>保留本地</span></label>
+                                              <label><input type="radio" checked={res?.resolution === 'useIncoming'} onChange={() => setTaskResolution(idx, 'useIncoming')} /><span>采用导入</span></label>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                    {wpConflictAnalysis.tasks.additions.length > 0 && (
+                                      <div className="wp-additions-section">
+                                        <h4 className="wp-section-subtitle"><Plus size={14} /> 新增补强任务 ({wpConflictAnalysis.tasks.additions.length}项)</h4>
+                                        <div className="wp-additions-list">
+                                          {wpConflictAnalysis.tasks.additions.map((add, idx) => (
+                                            <div key={`tadd-${idx}`} className="wp-addition-item">
+                                              <div className="wp-addition-head">
+                                                <AlertTriangle size={14} />
+                                                <span className="wp-addition-case">{add.item.evidenceName || add.item.issue}</span>
+                                                <span className="wp-addition-arrow">→</span>
+                                                <span className="wp-addition-evidence">{add.item.reason?.slice(0, 40)}{add.item.reason?.length > 40 ? '...' : ''}</span>
+                                                <span className="wp-addition-issue">{add.item.assignee || '未分配'}</span>
+                                                <span className="wp-addition-status">{add.item.status}</span>
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
+
+                            {wpMergeSection === 'factNodes' && (
+                              <div className="wp-records-merge">
+                                {wpConflictAnalysis.factNodes.conflicts.length > 0 && (
+                                  <div className="wp-batch-actions">
+                                    <span className="wp-batch-label">批量设置事实节点冲突：</span>
+                                    <button type="button" className="ghost-btn small-btn" onClick={() => batchSetFactNodeResolution('keepLocal')}>全部保留本地</button>
+                                    <button type="button" className="ghost-btn small-btn" onClick={() => batchSetFactNodeResolution('useIncoming')}>全部采用导入</button>
+                                  </div>
+                                )}
+                                {wpConflictAnalysis.factNodes.conflicts.length === 0 && wpConflictAnalysis.factNodes.additions.length === 0 ? (
+                                  <div className="dm-empty">
+                                    <CheckCircle2 size={40} />
+                                    <p>事实节点无新增或冲突</p>
+                                  </div>
+                                ) : (
+                                  <>
+                                    {wpConflictAnalysis.factNodes.conflicts.map((conflict, idx) => {
+                                      const res = wpResolutions.factNodes[idx];
+                                      return (
+                                        <div key={`fconflict-${idx}`} className={`wp-conflict-card ${res?.resolution && res.resolution !== 'ask' ? 'resolved' : ''}`}>
+                                          <div className="wp-conflict-header">
+                                            <div className="wp-conflict-title">
+                                              <AlertTriangle size={16} />
+                                              <strong>事实节点冲突 {idx + 1}：</strong>
+                                              <span>{conflict.local?.title}</span>
+                                            </div>
+                                            <span className={`wp-conflict-status ${res?.resolution || ''}`}>
+                                              {res?.resolution === 'keepLocal' && '保留本地'}
+                                              {res?.resolution === 'useIncoming' && '采用导入'}
+                                              {(!res?.resolution || res.resolution === 'ask') && '待处理'}
+                                            </span>
+                                          </div>
+                                          <div className="wp-compare-grid">
+                                            <div className="wp-compare-col local">
+                                              <div className="wp-compare-col-header"><span className="wp-col-tag local-tag">本地版本</span></div>
+                                              <div className="wp-field-row"><span className="wp-field-name">摘要</span><span className="wp-field-value">{conflict.local?.title || '-'}</span></div>
+                                              <div className="wp-field-row"><span className="wp-field-name">详情</span><span className="wp-field-value">{(conflict.local?.summary || '-').slice(0, 60)}</span></div>
+                                              <div className="wp-field-row"><span className="wp-field-name">日期</span><span className="wp-field-value">{conflict.local?.dateFrom || '-'} ~ {conflict.local?.dateTo || '-'}</span></div>
+                                            </div>
+                                            <div className="wp-compare-col incoming">
+                                              <div className="wp-compare-col-header"><span className="wp-col-tag incoming-tag">导入版本</span></div>
+                                              <div className="wp-field-row"><span className="wp-field-name">摘要</span><span className="wp-field-value">{conflict.incoming?.title || '-'}</span></div>
+                                              <div className="wp-field-row"><span className="wp-field-name">详情</span><span className="wp-field-value">{(conflict.incoming?.summary || '-').slice(0, 60)}</span></div>
+                                              <div className="wp-field-row"><span className="wp-field-name">日期</span><span className="wp-field-value">{conflict.incoming?.dateFrom || '-'} ~ {conflict.incoming?.dateTo || '-'}</span></div>
+                                            </div>
+                                          </div>
+                                          <div className="wp-resolution-actions">
+                                            <div className="wp-resolution-radios">
+                                              <label><input type="radio" checked={res?.resolution === 'keepLocal'} onChange={() => setFactNodeResolution(idx, 'keepLocal')} /><span>保留本地</span></label>
+                                              <label><input type="radio" checked={res?.resolution === 'useIncoming'} onChange={() => setFactNodeResolution(idx, 'useIncoming')} /><span>采用导入</span></label>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                    {wpConflictAnalysis.factNodes.additions.length > 0 && (
+                                      <div className="wp-additions-section">
+                                        <h4 className="wp-section-subtitle"><Plus size={14} /> 新增事实节点 ({wpConflictAnalysis.factNodes.additions.length}个)</h4>
+                                        <div className="wp-additions-list">
+                                          {wpConflictAnalysis.factNodes.additions.map((add, idx) => (
+                                            <div key={`fadd-${idx}`} className="wp-addition-item">
+                                              <div className="wp-addition-head">
+                                                <GitBranch size={14} />
+                                                <span className="wp-addition-case">{add.item.title}</span>
+                                                <span className="wp-addition-arrow">→</span>
+                                                <span className="wp-addition-evidence">{add.item.issue || '无争议点'}</span>
+                                                <span className="wp-addition-issue">{add.item.evidenceIds?.length || 0}条证据</span>
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="dm-backup-actions">
+                            <button
+                              type="button"
+                              className="dm-action-btn primary"
+                              onClick={confirmWorkPackageMerge}
+                            >
+                              <CheckCircle2 size={16} /> 确认合并
+                              <span className="dm-action-sub">
+                                （合并前会自动创建快照，可随时回滚）
+                              </span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {!wpImportParseResult && (
+                        <div className="dm-empty">
+                          <Briefcase size={40} />
+                          <p>请选择或粘贴案件工作包文件</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
