@@ -391,6 +391,8 @@ function analyzeBackupImport(backupText, currentRecords) {
     const overwriteSamples = [];
     const addSamples = [];
     const skipSamples = [];
+    const overwrittenIds = new Set();
+    const newIdSet = new Set(currentRecords.map((r) => r.id));
 
     backupRecords.forEach((r) => {
       if (strategy === 'addOnly') {
@@ -404,22 +406,44 @@ function analyzeBackupImport(backupText, currentRecords) {
           if (addSamples.length < 3) addSamples.push(r);
         }
       } else if (strategy === 'overwriteById') {
-        if (r.id && currentIdMap.has(r.id)) {
+        if (r.id && currentIdMap.has(r.id) && !overwrittenIds.has(r.id)) {
           toOverwrite.push({ incoming: r, existing: currentIdMap.get(r.id) });
+          overwrittenIds.add(r.id);
           if (overwriteSamples.length < 3) overwriteSamples.push({ incoming: r, existing: currentIdMap.get(r.id) });
         } else {
+          let id = r.id;
+          if (!id || newIdSet.has(id)) {
+            id = uid();
+          }
+          newIdSet.add(id);
           toAdd.push(r);
           if (addSamples.length < 3) addSamples.push(r);
         }
       } else if (strategy === 'mergeByCaseEvidence') {
         const key = `${r.caseName}||${r.evidence}`;
+        let matched = false;
         if (currentCaseEvidenceMap.has(key)) {
-          toOverwrite.push({ incoming: r, existing: currentCaseEvidenceMap.get(key) });
-          if (overwriteSamples.length < 3) overwriteSamples.push({ incoming: r, existing: currentCaseEvidenceMap.get(key) });
-        } else if (r.id && currentIdMap.has(r.id)) {
-          toOverwrite.push({ incoming: r, existing: currentIdMap.get(r.id) });
-          if (overwriteSamples.length < 3) overwriteSamples.push({ incoming: r, existing: currentIdMap.get(r.id) });
-        } else {
+          const existing = currentCaseEvidenceMap.get(key);
+          if (!overwrittenIds.has(existing.id)) {
+            toOverwrite.push({ incoming: r, existing });
+            overwrittenIds.add(existing.id);
+            if (overwriteSamples.length < 3) overwriteSamples.push({ incoming: r, existing });
+            matched = true;
+          }
+        }
+        if (!matched && r.id && currentIdMap.has(r.id) && !overwrittenIds.has(r.id)) {
+          const existing = currentIdMap.get(r.id);
+          toOverwrite.push({ incoming: r, existing });
+          overwrittenIds.add(r.id);
+          if (overwriteSamples.length < 3) overwriteSamples.push({ incoming: r, existing });
+          matched = true;
+        }
+        if (!matched) {
+          let id = r.id;
+          if (!id || newIdSet.has(id)) {
+            id = uid();
+          }
+          newIdSet.add(id);
           toAdd.push(r);
           if (addSamples.length < 3) addSamples.push(r);
         }
