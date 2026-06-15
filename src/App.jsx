@@ -1390,6 +1390,7 @@ function App() {
   const [expandedFactNodes, setExpandedFactNodes] = useState({});
   const [draggedEvidenceId, setDraggedEvidenceId] = useState(null);
   const [dragOverNodeId, setDragOverNodeId] = useState(null);
+  const [factNodeSource, setFactNodeSource] = useState(null);
 
   const DATA_MGMT_TABS = [
     { key: 'version', label: '版本信息', icon: Database },
@@ -2175,6 +2176,7 @@ function App() {
   function openWbCreateFactNode() {
     setFactNodeModalMode('create');
     setEditingFactNodeId(null);
+    setFactNodeSource('workbench');
     setFactNodeForm({
       title: '',
       summary: '',
@@ -2188,6 +2190,7 @@ function App() {
   function openWbEditFactNode(node) {
     setFactNodeModalMode('edit');
     setEditingFactNodeId(node.id);
+    setFactNodeSource('workbench');
     setFactNodeForm({
       title: node.title || '',
       summary: node.summary || '',
@@ -2359,6 +2362,7 @@ function App() {
   function openCreateFactNode() {
     setFactNodeModalMode('create');
     setEditingFactNodeId(null);
+    setFactNodeSource('main');
     setFactNodeForm({
       title: '',
       summary: '',
@@ -2372,6 +2376,7 @@ function App() {
   function openEditFactNode(node) {
     setFactNodeModalMode('edit');
     setEditingFactNodeId(node.id);
+    setFactNodeSource(node.caseName === workbenchCase ? 'workbench' : 'main');
     setFactNodeForm({
       title: node.title || '',
       summary: node.summary || '',
@@ -2385,6 +2390,7 @@ function App() {
   function closeFactNodeModal() {
     setShowFactNodeModal(false);
     setEditingFactNodeId(null);
+    setFactNodeSource(null);
   }
 
   function handleFactNodeFormChange(key, value) {
@@ -2393,9 +2399,10 @@ function App() {
 
   function confirmFactNode() {
     if (factNodeModalMode === 'create') {
+      const targetCaseName = factNodeSource === 'workbench' ? workbenchCase : selectedCaseName;
       const next = addFactNode(factNodes, {
         ...factNodeForm,
-        caseName: selectedCaseName || workbenchCase,
+        caseName: targetCaseName,
       });
       setFactNodes(next);
     } else if (factNodeModalMode === 'edit' && editingFactNodeId) {
