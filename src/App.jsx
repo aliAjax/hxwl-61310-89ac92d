@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, ChevronUp, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight, ArrowRightLeft, Database, History, Download, Star, Settings, Link2, ArrowLeft } from 'lucide-react';
 import './App.css';
 
+const FACT_NODE_STORAGE = 'hxwl-61310-fact-nodes';
+
 const appConfig = {
   "id": "hxwl-61310",
   "port": 61310,
@@ -704,6 +706,78 @@ function removeTask(tasks, taskId) {
   return next;
 }
 
+function loadFactNodes() {
+  const raw = localStorage.getItem(FACT_NODE_STORAGE);
+  if (raw) {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function saveFactNodes(nodes) {
+  localStorage.setItem(FACT_NODE_STORAGE, JSON.stringify(nodes));
+}
+
+function addFactNode(nodes, nodeData) {
+  const newNode = {
+    id: uid(),
+    title: '',
+    summary: '',
+    issue: '',
+    dateFrom: '',
+    dateTo: '',
+    caseName: '',
+    evidenceIds: [],
+    createdAt: new Date().toISOString(),
+    ...nodeData,
+  };
+  const next = [...nodes, newNode];
+  saveFactNodes(next);
+  return next;
+}
+
+function updateFactNode(nodes, nodeId, updates) {
+  const next = nodes.map((node) =>
+    node.id === nodeId ? { ...node, ...updates } : node
+  );
+  saveFactNodes(next);
+  return next;
+}
+
+function removeFactNode(nodes, nodeId) {
+  const next = nodes.filter((node) => node.id !== nodeId);
+  saveFactNodes(next);
+  return next;
+}
+
+function addEvidenceToFactNode(nodes, nodeId, evidenceId) {
+  return updateFactNode(nodes, nodeId, {
+    evidenceIds: [...(nodes.find((n) => n.id === nodeId)?.evidenceIds || []), evidenceId],
+  });
+}
+
+function removeEvidenceFromFactNode(nodes, nodeId, evidenceId) {
+  const node = nodes.find((n) => n.id === nodeId);
+  if (!node) return nodes;
+  return updateFactNode(nodes, nodeId, {
+    evidenceIds: node.evidenceIds.filter((id) => id !== evidenceId),
+  });
+}
+
+function getEvidenceFactNodeMap(nodes) {
+  const map = {};
+  nodes.forEach((node) => {
+    node.evidenceIds.forEach((eid) => {
+      map[eid] = node.id;
+    });
+  });
+  return map;
+}
+
 function isTaskOverdue(task) {
   if (!task.deadline || task.status === '已完成' || task.status === '已取消') return false;
   const deadlineDate = new Date(task.deadline);
@@ -1301,6 +1375,21 @@ function App() {
   const [boardFilterOverdue, setBoardFilterOverdue] = useState(false);
   const [taskContext, setTaskContext] = useState(null);
   const [multiEvidenceIds, setMultiEvidenceIds] = useState([]);
+  const [factNodes, setFactNodes] = useState(loadFactNodes);
+  const [timelineViewMode, setTimelineViewMode] = useState('date');
+  const [showFactNodeModal, setShowFactNodeModal] = useState(false);
+  const [factNodeModalMode, setFactNodeModalMode] = useState('create');
+  const [editingFactNodeId, setEditingFactNodeId] = useState(null);
+  const [factNodeForm, setFactNodeForm] = useState({
+    title: '',
+    summary: '',
+    issue: '',
+    dateFrom: '',
+    dateTo: '',
+  });
+  const [expandedFactNodes, setExpandedFactNodes] = useState({});
+  const [draggedEvidenceId, setDraggedEvidenceId] = useState(null);
+  const [dragOverNodeId, setDragOverNodeId] = useState(null);
 
   const DATA_MGMT_TABS = [
     { key: 'version', label: '版本信息', icon: Database },
@@ -1957,6 +2046,169 @@ function App() {
     return result;
   }, [wbDisplayRecords, workbenchCase]);
 
+  const wbFactNodeTimelineData = useMemo(() => {
+    if (!workbenchCase) return [];
+
+    const caseRecords = wbDisplayRecords.filter(item => item.caseName === workbenchCase);
+    const caseFactNodes = factNodes.filter(n => n.caseName === workbenchCase);
+    const evidenceNodeMap = getEvidenceFactNodeMap(caseFactNodes);
+
+    const unassignedEvidence = caseRecords.filter(item => !evidenceNodeMap[item.id]);
+    const unassignedWithDate = unassignedEvidence.filter(item => item.date);
+    const unassignedWithoutDate = unassignedEvidence.filter(item => !item.date);
+
+    const result = [];
+
+    caseFactNodes.forEach(node => {
+      const nodeEvidence = caseRecords.filter(r => node.evidenceIds.includes(r.id));
+      const sortedEvidence = nodeEvidence.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+      let nodeDate = node.dateFrom;
+      if (!nodeDate && sortedEvidence.length > 0) {
+        nodeDate = sortedEvidence[0].date;
+      }
+      result.push({
+        type: 'factNode',
+        id: node.id,
+        node,
+        date: nodeDate || '未标注日期',
+        items: sortedEvidence,
+        isNoDate: !nodeDate,
+      });
+    });
+
+    result.sort((a, b) => {
+      if (a.isNoDate && b.isNoDate) return 0;
+      if (a.isNoDate) return 1;
+      if (b.isNoDate) return -1;
+      return a.date.localeCompare(b.date);
+    });
+
+    const unassignedGrouped = {};
+    unassignedWithDate.forEach(item => {
+      const key = item.date;
+      (unassignedGrouped[key] ||= []).push(item);
+    });
+    const sortedUnassignedDates = Object.keys(unassignedGrouped).sort();
+    sortedUnassignedDates.forEach(date => {
+      result.push({
+        type: 'dateGroup',
+        date,
+        items: unassignedGrouped[date],
+        isNoDate: false,
+      });
+    });
+
+    if (unassignedWithoutDate.length > 0) {
+      result.push({
+        type: 'dateGroup',
+        date: '未标注日期',
+        items: unassignedWithoutDate,
+        isNoDate: true,
+      });
+    }
+
+    return result.sort((a, b) => {
+      if (a.isNoDate && b.isNoDate) return 0;
+      if (a.isNoDate) return 1;
+      if (b.isNoDate) return -1;
+      return a.date.localeCompare(b.date);
+    });
+  }, [wbDisplayRecords, workbenchCase, factNodes]);
+
+  const [wbTimelineViewMode, setWbTimelineViewMode] = useState('date');
+  const [wbExpandedFactNodes, setWbExpandedFactNodes] = useState({});
+  const [wbDragOverNodeId, setWbDragOverNodeId] = useState(null);
+
+  function toggleWbFactNodeExpand(nodeId) {
+    setWbExpandedFactNodes({
+      ...wbExpandedFactNodes,
+      [nodeId]: !wbExpandedFactNodes[nodeId],
+    });
+  }
+
+  function handleWbDragOver(e, nodeId) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setWbDragOverNodeId(nodeId);
+  }
+
+  function handleWbDragLeave() {
+    setWbDragOverNodeId(null);
+  }
+
+  function handleWbDropOnNode(e, nodeId) {
+    e.preventDefault();
+    if (!draggedEvidenceId) return;
+
+    const evidenceNodeMap = getEvidenceFactNodeMap(factNodes);
+    const currentNodeId = evidenceNodeMap[draggedEvidenceId];
+
+    let next = factNodes;
+    if (currentNodeId && currentNodeId !== nodeId) {
+      next = removeEvidenceFromFactNode(next, currentNodeId, draggedEvidenceId);
+    }
+    if (currentNodeId !== nodeId) {
+      next = addEvidenceToFactNode(next, nodeId, draggedEvidenceId);
+    }
+
+    setFactNodes(next);
+    setDraggedEvidenceId(null);
+    setWbDragOverNodeId(null);
+  }
+
+  function handleWbDropOnUngrouped(e) {
+    e.preventDefault();
+    if (!draggedEvidenceId) return;
+
+    const evidenceNodeMap = getEvidenceFactNodeMap(factNodes);
+    const currentNodeId = evidenceNodeMap[draggedEvidenceId];
+
+    if (currentNodeId) {
+      const next = removeEvidenceFromFactNode(factNodes, currentNodeId, draggedEvidenceId);
+      setFactNodes(next);
+    }
+
+    setDraggedEvidenceId(null);
+    setWbDragOverNodeId(null);
+  }
+
+  function openWbCreateFactNode() {
+    setFactNodeModalMode('create');
+    setEditingFactNodeId(null);
+    setFactNodeForm({
+      title: '',
+      summary: '',
+      issue: '',
+      dateFrom: '',
+      dateTo: '',
+    });
+    setShowFactNodeModal(true);
+  }
+
+  function openWbEditFactNode(node) {
+    setFactNodeModalMode('edit');
+    setEditingFactNodeId(node.id);
+    setFactNodeForm({
+      title: node.title || '',
+      summary: node.summary || '',
+      issue: node.issue || '',
+      dateFrom: node.dateFrom || '',
+      dateTo: node.dateTo || '',
+    });
+    setShowFactNodeModal(true);
+  }
+
+  function handleWbDeleteFactNode(nodeId) {
+    if (!confirm('确定要删除此事实节点吗？节点下的证据不会被删除。')) return;
+    const next = removeFactNode(factNodes, nodeId);
+    setFactNodes(next);
+  }
+
+  function handleWbRemoveEvidenceFromNode(nodeId, evidenceId) {
+    const next = removeEvidenceFromFactNode(factNodes, nodeId, evidenceId);
+    setFactNodes(next);
+  }
+
   const wbTasks = useMemo(() => {
     if (!workbenchCase) return [];
     return tasks.filter((t) => t.caseName === workbenchCase);
@@ -2034,6 +2286,198 @@ function App() {
 
     return result;
   }, [displayRecords, selectedCaseName]);
+
+  const factNodeTimelineData = useMemo(() => {
+    if (!selectedCaseName) return [];
+
+    const caseRecords = displayRecords.filter(item => item.caseName === selectedCaseName);
+    const caseFactNodes = factNodes.filter(n => n.caseName === selectedCaseName);
+    const evidenceNodeMap = getEvidenceFactNodeMap(caseFactNodes);
+
+    const unassignedEvidence = caseRecords.filter(item => !evidenceNodeMap[item.id]);
+    const unassignedWithDate = unassignedEvidence.filter(item => item.date);
+    const unassignedWithoutDate = unassignedEvidence.filter(item => !item.date);
+
+    const result = [];
+
+    caseFactNodes.forEach(node => {
+      const nodeEvidence = caseRecords.filter(r => node.evidenceIds.includes(r.id));
+      const sortedEvidence = nodeEvidence.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+      let nodeDate = node.dateFrom;
+      if (!nodeDate && sortedEvidence.length > 0) {
+        nodeDate = sortedEvidence[0].date;
+      }
+      result.push({
+        type: 'factNode',
+        id: node.id,
+        node,
+        date: nodeDate || '未标注日期',
+        items: sortedEvidence,
+        isNoDate: !nodeDate,
+      });
+    });
+
+    result.sort((a, b) => {
+      if (a.isNoDate && b.isNoDate) return 0;
+      if (a.isNoDate) return 1;
+      if (b.isNoDate) return -1;
+      return a.date.localeCompare(b.date);
+    });
+
+    const unassignedGrouped = {};
+    unassignedWithDate.forEach(item => {
+      const key = item.date;
+      (unassignedGrouped[key] ||= []).push(item);
+    });
+    const sortedUnassignedDates = Object.keys(unassignedGrouped).sort();
+    sortedUnassignedDates.forEach(date => {
+      result.push({
+        type: 'dateGroup',
+        date,
+        items: unassignedGrouped[date],
+        isNoDate: false,
+      });
+    });
+
+    if (unassignedWithoutDate.length > 0) {
+      result.push({
+        type: 'dateGroup',
+        date: '未标注日期',
+        items: unassignedWithoutDate,
+        isNoDate: true,
+      });
+    }
+
+    return result.sort((a, b) => {
+      if (a.isNoDate && b.isNoDate) return 0;
+      if (a.isNoDate) return 1;
+      if (b.isNoDate) return -1;
+      return a.date.localeCompare(b.date);
+    });
+  }, [displayRecords, selectedCaseName, factNodes]);
+
+  function openCreateFactNode() {
+    setFactNodeModalMode('create');
+    setEditingFactNodeId(null);
+    setFactNodeForm({
+      title: '',
+      summary: '',
+      issue: '',
+      dateFrom: '',
+      dateTo: '',
+    });
+    setShowFactNodeModal(true);
+  }
+
+  function openEditFactNode(node) {
+    setFactNodeModalMode('edit');
+    setEditingFactNodeId(node.id);
+    setFactNodeForm({
+      title: node.title || '',
+      summary: node.summary || '',
+      issue: node.issue || '',
+      dateFrom: node.dateFrom || '',
+      dateTo: node.dateTo || '',
+    });
+    setShowFactNodeModal(true);
+  }
+
+  function closeFactNodeModal() {
+    setShowFactNodeModal(false);
+    setEditingFactNodeId(null);
+  }
+
+  function handleFactNodeFormChange(key, value) {
+    setFactNodeForm({ ...factNodeForm, [key]: value });
+  }
+
+  function confirmFactNode() {
+    if (factNodeModalMode === 'create') {
+      const next = addFactNode(factNodes, {
+        ...factNodeForm,
+        caseName: selectedCaseName || workbenchCase,
+      });
+      setFactNodes(next);
+    } else if (factNodeModalMode === 'edit' && editingFactNodeId) {
+      const next = updateFactNode(factNodes, editingFactNodeId, factNodeForm);
+      setFactNodes(next);
+    }
+    closeFactNodeModal();
+  }
+
+  function handleDeleteFactNode(nodeId) {
+    if (!confirm('确定要删除此事实节点吗？节点下的证据不会被删除。')) return;
+    const next = removeFactNode(factNodes, nodeId);
+    setFactNodes(next);
+  }
+
+  function toggleFactNodeExpand(nodeId) {
+    setExpandedFactNodes({
+      ...expandedFactNodes,
+      [nodeId]: !expandedFactNodes[nodeId],
+    });
+  }
+
+  function handleDragStart(e, evidenceId) {
+    setDraggedEvidenceId(evidenceId);
+    e.dataTransfer.effectAllowed = 'move';
+  }
+
+  function handleDragEnd() {
+    setDraggedEvidenceId(null);
+    setDragOverNodeId(null);
+  }
+
+  function handleDragOver(e, nodeId) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverNodeId(nodeId);
+  }
+
+  function handleDragLeave() {
+    setDragOverNodeId(null);
+  }
+
+  function handleDropOnNode(e, nodeId) {
+    e.preventDefault();
+    if (!draggedEvidenceId) return;
+
+    const evidenceNodeMap = getEvidenceFactNodeMap(factNodes);
+    const currentNodeId = evidenceNodeMap[draggedEvidenceId];
+
+    let next = factNodes;
+    if (currentNodeId && currentNodeId !== nodeId) {
+      next = removeEvidenceFromFactNode(next, currentNodeId, draggedEvidenceId);
+    }
+    if (currentNodeId !== nodeId) {
+      next = addEvidenceToFactNode(next, nodeId, draggedEvidenceId);
+    }
+
+    setFactNodes(next);
+    setDraggedEvidenceId(null);
+    setDragOverNodeId(null);
+  }
+
+  function handleDropOnUngrouped(e) {
+    e.preventDefault();
+    if (!draggedEvidenceId) return;
+
+    const evidenceNodeMap = getEvidenceFactNodeMap(factNodes);
+    const currentNodeId = evidenceNodeMap[draggedEvidenceId];
+
+    if (currentNodeId) {
+      const next = removeEvidenceFromFactNode(factNodes, currentNodeId, draggedEvidenceId);
+      setFactNodes(next);
+    }
+
+    setDraggedEvidenceId(null);
+    setDragOverNodeId(null);
+  }
+
+  function handleRemoveEvidenceFromNode(nodeId, evidenceId) {
+    const next = removeEvidenceFromFactNode(factNodes, nodeId, evidenceId);
+    setFactNodes(next);
+  }
 
   function openDataMgmt() {
     setShowDataMgmt(true);
@@ -2622,44 +3066,216 @@ function App() {
 
               {workbenchTab === 'timeline' && (
                 <div className="wb-timeline-tab">
-                  {wbTimeline.length > 0 ? (
-                    <div className="timeline-track">
-                      {wbTimeline.map((group, groupIdx) => (
-                        <div key={group.date} className={`timeline-group ${group.isNoDate ? 'no-date-group' : ''}`}>
-                          <div className="timeline-date-marker">
-                            <div className="timeline-dot-wrapper">
-                              {groupIdx === 0 ? <CircleDot size={14} /> : <span className="timeline-dot" />}
-                              {groupIdx < wbTimeline.length - 1 && <span className="timeline-line" />}
-                            </div>
-                            <div className="timeline-date-label">
-                              <CalendarDays size={14} />
-                              <span>{group.isNoDate ? '未标注日期' : group.date}</span>
-                              <span className="timeline-count">{group.items.length} 份</span>
-                            </div>
-                          </div>
-                          <div className="timeline-items">
-                            {group.items.map((item) => (
-                              <div key={item.id} className={`timeline-node ${selected?.id === item.id ? 'active' : ''} ${item._masked ? 'masked-record' : ''}`} onClick={() => setSelected(records.find((r) => r.id === item.id))}>
-                                <div className="timeline-node-head">
-                                  <span className="timeline-node-title">
-                                    {item.evidence}
-                                    {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
-                                  </span>
-                                  <span className={'status ' + statusClass(item.status)}>{item.status}</span>
-                                </div>
-                                <div className="timeline-node-meta">
-                                  <span><Briefcase size={12} />{item.source || '未标注'}</span>
-                                  <span><Target size={12} />{item.issue || '未关联'}</span>
-                                </div>
-                                <div className="timeline-node-purpose">{item.purpose || '无证明目的'}</div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
+                  <div className="wb-timeline-controls">
+                    <div className="timeline-view-toggle">
+                      <button
+                        type="button"
+                        className={`timeline-view-btn ${wbTimelineViewMode === 'date' ? 'active' : ''}`}
+                        onClick={() => setWbTimelineViewMode('date')}
+                      >
+                        <CalendarDays size={14} /> 按日期
+                      </button>
+                      <button
+                        type="button"
+                        className={`timeline-view-btn ${wbTimelineViewMode === 'fact' ? 'active' : ''}`}
+                        onClick={() => setWbTimelineViewMode('fact')}
+                      >
+                        <Layers size={14} /> 事实节点
+                      </button>
                     </div>
+                    {wbTimelineViewMode === 'fact' && (
+                      <button type="button" className="add-fact-node-btn" onClick={openWbCreateFactNode}>
+                        <Plus size={14} /> 新建节点
+                      </button>
+                    )}
+                  </div>
+
+                  {wbTimelineViewMode === 'date' ? (
+                    wbTimeline.length > 0 ? (
+                      <div className="timeline-track">
+                        {wbTimeline.map((group, groupIdx) => (
+                          <div key={group.date} className={`timeline-group ${group.isNoDate ? 'no-date-group' : ''}`}>
+                            <div className="timeline-date-marker">
+                              <div className="timeline-dot-wrapper">
+                                {groupIdx === 0 ? <CircleDot size={14} /> : <span className="timeline-dot" />}
+                                {groupIdx < wbTimeline.length - 1 && <span className="timeline-line" />}
+                              </div>
+                              <div className="timeline-date-label">
+                                <CalendarDays size={14} />
+                                <span>{group.isNoDate ? '未标注日期' : group.date}</span>
+                                <span className="timeline-count">{group.items.length} 份</span>
+                              </div>
+                            </div>
+                            <div className="timeline-items">
+                              {group.items.map((item) => (
+                                <div key={item.id} className={`timeline-node ${selected?.id === item.id ? 'active' : ''} ${item._masked ? 'masked-record' : ''}`} onClick={() => setSelected(records.find((r) => r.id === item.id))}>
+                                  <div className="timeline-node-head">
+                                    <span className="timeline-node-title">
+                                      {item.evidence}
+                                      {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+                                    </span>
+                                    <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                                  </div>
+                                  <div className="timeline-node-meta">
+                                    <span><Briefcase size={12} />{item.source || '未标注'}</span>
+                                    <span><Target size={12} />{item.issue || '未关联'}</span>
+                                  </div>
+                                  <div className="timeline-node-purpose">{item.purpose || '无证明目的'}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="wb-empty-hint"><GitBranch size={32} /><p>该案件暂无带日期的证据记录</p></div>
+                    )
                   ) : (
-                    <div className="wb-empty-hint"><GitBranch size={32} /><p>该案件暂无带日期的证据记录</p></div>
+                    wbFactNodeTimelineData.length > 0 ? (
+                      <div className="timeline-track fact-node-timeline">
+                        {wbFactNodeTimelineData.map((group, groupIdx) => (
+                          group.type === 'factNode' ? (
+                            <div
+                              key={group.id}
+                              className={`timeline-fact-node-group ${wbDragOverNodeId === group.id ? 'drag-over' : ''} ${group.isNoDate ? 'no-date-group' : ''}`}
+                              onDragOver={(e) => handleWbDragOver(e, group.id)}
+                              onDragLeave={handleWbDragLeave}
+                              onDrop={(e) => handleWbDropOnNode(e, group.id)}
+                            >
+                              <div className="timeline-date-marker">
+                                <div className="timeline-dot-wrapper">
+                                  {groupIdx === 0 ? <CircleDot size={14} className="fact-node-dot" /> : <span className="timeline-dot fact-node-dot" />}
+                                  {groupIdx < wbFactNodeTimelineData.length - 1 && <span className="timeline-line" />}
+                                </div>
+                                <div className="timeline-date-label fact-node-date-label">
+                                  <Layers size={14} />
+                                  <span className="fact-node-date">{group.isNoDate ? '未标注日期' : group.date}</span>
+                                  <span className="timeline-count">{group.items.length} 份证据</span>
+                                </div>
+                              </div>
+                              <div className="fact-node-card">
+                                <div className="fact-node-header" onClick={() => toggleWbFactNodeExpand(group.id)}>
+                                  <div className="fact-node-title-row">
+                                    <span className="fact-node-title">{group.node.title || '未命名事实节点'}</span>
+                                    {group.node.issue && <span className="fact-node-issue-tag"><Target size={12} /> {group.node.issue}</span>}
+                                  </div>
+                                  <div className="fact-node-actions">
+                                    <button type="button" className="fact-node-action-btn" onClick={(e) => { e.stopPropagation(); openWbEditFactNode(group.node); }} title="编辑节点">
+                                      <Settings size={14} />
+                                    </button>
+                                    <button type="button" className="fact-node-action-btn danger" onClick={(e) => { e.stopPropagation(); handleWbDeleteFactNode(group.id); }} title="删除节点">
+                                      <Trash2 size={14} />
+                                    </button>
+                                    {wbExpandedFactNodes[group.id] ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                                  </div>
+                                </div>
+                                {group.node.summary && (
+                                  <div className="fact-node-summary">{group.node.summary}</div>
+                                )}
+                                {group.node.dateFrom && group.node.dateTo && (
+                                  <div className="fact-node-date-range">
+                                    <CalendarDays size={12} />
+                                    <span>{group.node.dateFrom} 至 {group.node.dateTo}</span>
+                                  </div>
+                                )}
+                                {wbExpandedFactNodes[group.id] && (
+                                  <div className="timeline-items fact-node-items">
+                                    {group.items.map((item) => (
+                                      <div
+                                        key={item.id}
+                                        className={`timeline-node ${selected?.id === item.id ? 'active' : ''} ${item._masked ? 'masked-record' : ''}`}
+                                        draggable
+                                        onDragStart={(e) => handleDragStart(e, item.id)}
+                                        onDragEnd={handleDragEnd}
+                                        onClick={() => setSelected(records.find((r) => r.id === item.id))}
+                                      >
+                                        <div className="timeline-node-head">
+                                          <span className="timeline-node-title">
+                                            {item.evidence}
+                                            {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+                                          </span>
+                                          <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                                        </div>
+                                        <div className="timeline-node-meta">
+                                          <span><Briefcase size={12} />{item.source || '未标注'}</span>
+                                          <span><Target size={12} />{item.issue || '未关联'}</span>
+                                        </div>
+                                        <div className="timeline-node-purpose">{item.purpose || '无证明目的'}</div>
+                                        <button
+                                          type="button"
+                                          className="remove-from-node-btn"
+                                          onClick={(e) => { e.stopPropagation(); handleWbRemoveEvidenceFromNode(group.id, item.id); }}
+                                          title="移出节点"
+                                        >
+                                          <X size={12} />
+                                        </button>
+                                      </div>
+                                    ))}
+                                    {group.items.length === 0 && (
+                                      <div className="fact-node-empty">
+                                        <p>拖拽证据到此节点中</p>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div
+                              key={group.date}
+                              className={`timeline-group ${group.isNoDate ? 'no-date-group' : ''}`}
+                              onDragOver={(e) => { e.preventDefault(); }}
+                              onDrop={handleWbDropOnUngrouped}
+                            >
+                              <div className="timeline-date-marker">
+                                <div className="timeline-dot-wrapper">
+                                  {groupIdx === 0 ? <CircleDot size={14} /> : <span className="timeline-dot" />}
+                                  {groupIdx < wbFactNodeTimelineData.length - 1 && <span className="timeline-line" />}
+                                </div>
+                                <div className="timeline-date-label">
+                                  <CalendarDays size={14} />
+                                  <span>{group.isNoDate ? '未标注日期' : group.date}</span>
+                                  <span className="timeline-count">{group.items.length} 份 · 未归类</span>
+                                </div>
+                              </div>
+                              <div className="timeline-items">
+                                {group.items.map((item) => (
+                                  <div
+                                    key={item.id}
+                                    className={`timeline-node ${selected?.id === item.id ? 'active' : ''} ${item._masked ? 'masked-record' : ''}`}
+                                    draggable
+                                    onDragStart={(e) => handleDragStart(e, item.id)}
+                                    onDragEnd={handleDragEnd}
+                                    onClick={() => setSelected(records.find((r) => r.id === item.id))}
+                                  >
+                                    <div className="timeline-node-head">
+                                      <span className="timeline-node-title">
+                                        {item.evidence}
+                                        {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+                                      </span>
+                                      <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                                    </div>
+                                    <div className="timeline-node-meta">
+                                      <span><Briefcase size={12} />{item.source || '未标注'}</span>
+                                      <span><Target size={12} />{item.issue || '未关联'}</span>
+                                    </div>
+                                    <div className="timeline-node-purpose">{item.purpose || '无证明目的'}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="wb-empty-hint">
+                        <GitBranch size={32} />
+                        <p>该案件暂无证据记录</p>
+                        <button type="button" className="primary-btn" onClick={openWbCreateFactNode}>
+                          <Plus size={14} /> 新建事实节点
+                        </button>
+                      </div>
+                    )
                   )}
                 </div>
               )}
@@ -3477,52 +4093,226 @@ function App() {
           )}
         </div>
 
+        {selectedCaseName && (
+          <div className="timeline-view-controls">
+            <div className="timeline-view-toggle">
+              <button
+                type="button"
+                className={`timeline-view-btn ${timelineViewMode === 'date' ? 'active' : ''}`}
+                onClick={() => setTimelineViewMode('date')}
+              >
+                <CalendarDays size={14} /> 按日期
+              </button>
+              <button
+                type="button"
+                className={`timeline-view-btn ${timelineViewMode === 'fact' ? 'active' : ''}`}
+                onClick={() => setTimelineViewMode('fact')}
+              >
+                <Layers size={14} /> 事实节点
+              </button>
+            </div>
+            {timelineViewMode === 'fact' && (
+              <button type="button" className="add-fact-node-btn" onClick={openCreateFactNode}>
+                <Plus size={14} /> 新建事实节点
+              </button>
+            )}
+          </div>
+        )}
+
         {selectedCaseName ? (
-          timelineData.length > 0 ? (
-            <div className="timeline-track">
-              {timelineData.map((group, groupIdx) => (
-                <div key={group.date} className={`timeline-group ${group.isNoDate ? 'no-date-group' : ''}`}>
-                  <div className="timeline-date-marker">
-                    <div className="timeline-dot-wrapper">
-                      {groupIdx === 0 ? <CircleDot size={14} /> : <span className="timeline-dot" />}
-                      {groupIdx < timelineData.length - 1 && <span className="timeline-line" />}
-                    </div>
-                    <div className="timeline-date-label">
-                      <CalendarDays size={14} />
-                      <span>{group.isNoDate ? '未标注日期' : group.date}</span>
-                      <span className="timeline-count">{group.items.length} 份</span>
-                    </div>
-                  </div>
-                  <div className="timeline-items">
-                    {group.items.map((item) => (
-                      <div
-                        key={item.id}
-                        className={`timeline-node ${selected?.id === item.id ? 'active' : ''} ${item._masked ? 'masked-record' : ''}`}
-                        onClick={() => setSelected(records.find((r) => r.id === item.id))}
-                      >
-                        <div className="timeline-node-head">
-                          <span className="timeline-node-title">
-                            {item.evidence}
-                            {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
-                          </span>
-                          <span className={'status ' + statusClass(item.status)}>{item.status}</span>
-                        </div>
-                        <div className="timeline-node-meta">
-                          <span><Briefcase size={12} />{item.source || '未标注'}</span>
-                          <span><Target size={12} />{item.issue || '未关联'}</span>
-                        </div>
-                        <div className="timeline-node-purpose">{item.purpose || '无证明目的'}</div>
+          timelineViewMode === 'date' ? (
+            timelineData.length > 0 ? (
+              <div className="timeline-track">
+                {timelineData.map((group, groupIdx) => (
+                  <div key={group.date} className={`timeline-group ${group.isNoDate ? 'no-date-group' : ''}`}>
+                    <div className="timeline-date-marker">
+                      <div className="timeline-dot-wrapper">
+                        {groupIdx === 0 ? <CircleDot size={14} /> : <span className="timeline-dot" />}
+                        {groupIdx < timelineData.length - 1 && <span className="timeline-line" />}
                       </div>
-                    ))}
+                      <div className="timeline-date-label">
+                        <CalendarDays size={14} />
+                        <span>{group.isNoDate ? '未标注日期' : group.date}</span>
+                        <span className="timeline-count">{group.items.length} 份</span>
+                      </div>
+                    </div>
+                    <div className="timeline-items">
+                      {group.items.map((item) => (
+                        <div
+                          key={item.id}
+                          className={`timeline-node ${selected?.id === item.id ? 'active' : ''} ${item._masked ? 'masked-record' : ''}`}
+                          onClick={() => setSelected(records.find((r) => r.id === item.id))}
+                        >
+                          <div className="timeline-node-head">
+                            <span className="timeline-node-title">
+                              {item.evidence}
+                              {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+                            </span>
+                            <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                          </div>
+                          <div className="timeline-node-meta">
+                            <span><Briefcase size={12} />{item.source || '未标注'}</span>
+                            <span><Target size={12} />{item.issue || '未关联'}</span>
+                          </div>
+                          <div className="timeline-node-purpose">{item.purpose || '无证明目的'}</div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <div className="timeline-empty">
+                <GitBranch size={40} />
+                <p>当前筛选条件下没有匹配的证据记录</p>
+              </div>
+            )
           ) : (
-            <div className="timeline-empty">
-              <GitBranch size={40} />
-              <p>当前筛选条件下没有匹配的证据记录</p>
-            </div>
+            factNodeTimelineData.length > 0 ? (
+              <div className="timeline-track fact-node-timeline">
+                {factNodeTimelineData.map((group, groupIdx) => (
+                  group.type === 'factNode' ? (
+                    <div
+                      key={group.id}
+                      className={`timeline-fact-node-group ${dragOverNodeId === group.id ? 'drag-over' : ''} ${group.isNoDate ? 'no-date-group' : ''}`}
+                      onDragOver={(e) => handleDragOver(e, group.id)}
+                      onDragLeave={handleDragLeave}
+                      onDrop={(e) => handleDropOnNode(e, group.id)}
+                    >
+                      <div className="timeline-date-marker">
+                        <div className="timeline-dot-wrapper">
+                          {groupIdx === 0 ? <CircleDot size={14} className="fact-node-dot" /> : <span className="timeline-dot fact-node-dot" />}
+                          {groupIdx < factNodeTimelineData.length - 1 && <span className="timeline-line" />}
+                        </div>
+                        <div className="timeline-date-label fact-node-date-label">
+                          <Layers size={14} />
+                          <span className="fact-node-date">{group.isNoDate ? '未标注日期' : group.date}</span>
+                          <span className="timeline-count">{group.items.length} 份证据</span>
+                        </div>
+                      </div>
+                      <div className="fact-node-card">
+                        <div className="fact-node-header" onClick={() => toggleFactNodeExpand(group.id)}>
+                          <div className="fact-node-title-row">
+                            <span className="fact-node-title">{group.node.title || '未命名事实节点'}</span>
+                            {group.node.issue && <span className="fact-node-issue-tag"><Target size={12} /> {group.node.issue}</span>}
+                          </div>
+                          <div className="fact-node-actions">
+                            <button type="button" className="fact-node-action-btn" onClick={(e) => { e.stopPropagation(); openEditFactNode(group.node); }} title="编辑节点">
+                              <Settings size={14} />
+                            </button>
+                            <button type="button" className="fact-node-action-btn danger" onClick={(e) => { e.stopPropagation(); handleDeleteFactNode(group.id); }} title="删除节点">
+                              <Trash2 size={14} />
+                            </button>
+                            {expandedFactNodes[group.id] ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                          </div>
+                        </div>
+                        {group.node.summary && (
+                          <div className="fact-node-summary">{group.node.summary}</div>
+                        )}
+                        {group.node.dateFrom && group.node.dateTo && (
+                          <div className="fact-node-date-range">
+                            <CalendarDays size={12} />
+                            <span>{group.node.dateFrom} 至 {group.node.dateTo}</span>
+                          </div>
+                        )}
+                        {expandedFactNodes[group.id] && (
+                          <div className="timeline-items fact-node-items">
+                            {group.items.map((item) => (
+                              <div
+                                key={item.id}
+                                className={`timeline-node ${selected?.id === item.id ? 'active' : ''} ${item._masked ? 'masked-record' : ''}`}
+                                draggable
+                                onDragStart={(e) => handleDragStart(e, item.id)}
+                                onDragEnd={handleDragEnd}
+                                onClick={() => setSelected(records.find((r) => r.id === item.id))}
+                              >
+                                <div className="timeline-node-head">
+                                  <span className="timeline-node-title">
+                                    {item.evidence}
+                                    {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+                                  </span>
+                                  <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                                </div>
+                                <div className="timeline-node-meta">
+                                  <span><Briefcase size={12} />{item.source || '未标注'}</span>
+                                  <span><Target size={12} />{item.issue || '未关联'}</span>
+                                </div>
+                                <div className="timeline-node-purpose">{item.purpose || '无证明目的'}</div>
+                                <button
+                                  type="button"
+                                  className="remove-from-node-btn"
+                                  onClick={(e) => { e.stopPropagation(); handleRemoveEvidenceFromNode(group.id, item.id); }}
+                                  title="移出节点"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
+                            ))}
+                            {group.items.length === 0 && (
+                              <div className="fact-node-empty">
+                                <p>拖拽证据到此节点中</p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      key={group.date}
+                      className={`timeline-group ${group.isNoDate ? 'no-date-group' : ''}`}
+                      onDragOver={(e) => { e.preventDefault(); }}
+                      onDrop={handleDropOnUngrouped}
+                    >
+                      <div className="timeline-date-marker">
+                        <div className="timeline-dot-wrapper">
+                          {groupIdx === 0 ? <CircleDot size={14} /> : <span className="timeline-dot" />}
+                          {groupIdx < factNodeTimelineData.length - 1 && <span className="timeline-line" />}
+                        </div>
+                        <div className="timeline-date-label">
+                          <CalendarDays size={14} />
+                          <span>{group.isNoDate ? '未标注日期' : group.date}</span>
+                          <span className="timeline-count">{group.items.length} 份 · 未归类</span>
+                        </div>
+                      </div>
+                      <div className="timeline-items">
+                        {group.items.map((item) => (
+                          <div
+                            key={item.id}
+                            className={`timeline-node ${selected?.id === item.id ? 'active' : ''} ${item._masked ? 'masked-record' : ''}`}
+                            draggable
+                            onDragStart={(e) => handleDragStart(e, item.id)}
+                            onDragEnd={handleDragEnd}
+                            onClick={() => setSelected(records.find((r) => r.id === item.id))}
+                          >
+                            <div className="timeline-node-head">
+                              <span className="timeline-node-title">
+                                {item.evidence}
+                                {item._masked && <span className="masked-badge"><Shield size={12} />脱敏</span>}
+                              </span>
+                              <span className={'status ' + statusClass(item.status)}>{item.status}</span>
+                            </div>
+                            <div className="timeline-node-meta">
+                              <span><Briefcase size={12} />{item.source || '未标注'}</span>
+                              <span><Target size={12} />{item.issue || '未关联'}</span>
+                            </div>
+                            <div className="timeline-node-purpose">{item.purpose || '无证明目的'}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                ))}
+              </div>
+            ) : (
+              <div className="timeline-empty">
+                <GitBranch size={40} />
+                <p>当前筛选条件下没有匹配的证据记录</p>
+                <button type="button" className="primary-btn" onClick={openCreateFactNode}>
+                  <Plus size={14} /> 新建事实节点
+                </button>
+              </div>
+            )
           )
         ) : (
           <div className="timeline-empty">
@@ -4467,6 +5257,102 @@ function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showFactNodeModal && (
+        <div className="modal-overlay" onClick={closeFactNodeModal}>
+          <div className="modal fact-node-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="panel-title" style={{ marginBottom: 0 }}>
+                <Layers size={18} />
+                <h2>{factNodeModalMode === 'create' ? '新建事实节点' : '编辑事实节点'}</h2>
+              </div>
+              <button type="button" className="icon-btn" onClick={closeFactNodeModal}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body">
+              <div className="fact-node-form">
+                <label className="wide">
+                  <span className="field-label-row">
+                    <span>事实摘要 <em className="required-tag">必填</em></span>
+                  </span>
+                  <input
+                    type="text"
+                    value={factNodeForm.title || ''}
+                    onChange={(e) => handleFactNodeFormChange('title', e.target.value)}
+                    placeholder="请输入事实节点的摘要标题，如：合同签订过程"
+                  />
+                </label>
+
+                <label className="wide">
+                  <span className="field-label-row">
+                    <span>事实详情</span>
+                  </span>
+                  <textarea
+                    value={factNodeForm.summary || ''}
+                    onChange={(e) => handleFactNodeFormChange('summary', e.target.value)}
+                    placeholder="请详细描述该事实节点的具体内容"
+                    rows={4}
+                  />
+                </label>
+
+                <label>
+                  <span className="field-label-row">
+                    <span>关联争议点</span>
+                  </span>
+                  <select
+                    value={factNodeForm.issue || ''}
+                    onChange={(e) => handleFactNodeFormChange('issue', e.target.value)}
+                  >
+                    <option value="">请选择争议点</option>
+                    {getAllIssues(customIssues, selectedCaseName || workbenchCase, records).map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="date-range-row">
+                  <label>
+                    <span className="field-label-row">
+                      <span>起始日期</span>
+                    </span>
+                    <input
+                      type="date"
+                      value={factNodeForm.dateFrom || ''}
+                      onChange={(e) => handleFactNodeFormChange('dateFrom', e.target.value)}
+                    />
+                  </label>
+                  <span className="date-range-separator">至</span>
+                  <label>
+                    <span className="field-label-row">
+                      <span>结束日期</span>
+                    </span>
+                    <input
+                      type="date"
+                      value={factNodeForm.dateTo || ''}
+                      onChange={(e) => handleFactNodeFormChange('dateTo', e.target.value)}
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button type="button" className="ghost-btn" onClick={closeFactNodeModal}>取消</button>
+              <button
+                type="button"
+                className="primary"
+                onClick={confirmFactNode}
+                disabled={!factNodeForm.title || !factNodeForm.title.trim()}
+              >
+                <Check size={18} />
+                {factNodeModalMode === 'create' ? '创建节点' : '保存修改'}
+              </button>
+            </div>
           </div>
         </div>
       )}
