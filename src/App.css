@@ -4944,6 +4944,280 @@ span.fact-node-dot {
   flex-wrap: wrap;
 }
 
+.dm-action-btn .dm-action-sub {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.9;
+  margin-left: 6px;
+}
+
+.dm-merge-strategy {
+  margin-top: 16px;
+  padding: 16px;
+  background: #f8fafc;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.dm-merge-strategy h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.dm-strategy-options {
+  display: grid;
+  gap: 8px;
+}
+
+.dm-strategy-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  background: #fff;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.dm-strategy-option:hover {
+  border-color: #94a3b8;
+  background: #f1f5f9;
+}
+
+.dm-strategy-option.active {
+  border-color: var(--accent, #475569);
+  background: #f0f4ff;
+}
+
+.dm-strategy-option input[type="radio"] {
+  margin-top: 3px;
+  accent-color: var(--accent, #475569);
+}
+
+.dm-strategy-content {
+  flex: 1;
+}
+
+.dm-strategy-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+  margin-bottom: 4px;
+}
+
+.dm-strategy-desc {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.dm-merge-preview {
+  margin-top: 16px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.dm-merge-preview h4 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.dm-preview-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.dm-preview-stat {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+.dm-preview-stat div {
+  display: flex;
+  flex-direction: column;
+}
+
+.dm-preview-stat span {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.dm-preview-stat strong {
+  font-size: 18px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+.dm-preview-stat.add {
+  border-left: 3px solid #10b981;
+}
+
+.dm-preview-stat.add svg {
+  color: #10b981;
+}
+
+.dm-preview-stat.add strong {
+  color: #047857;
+}
+
+.dm-preview-stat.overwrite {
+  border-left: 3px solid #f59e0b;
+}
+
+.dm-preview-stat.overwrite svg {
+  color: #f59e0b;
+}
+
+.dm-preview-stat.overwrite strong {
+  color: #92400e;
+}
+
+.dm-preview-stat.skip {
+  border-left: 3px solid #94a3b8;
+}
+
+.dm-preview-stat.skip svg {
+  color: #94a3b8;
+}
+
+.dm-preview-stat.skip strong {
+  color: #475569;
+}
+
+.dm-preview-samples {
+  margin-top: 12px;
+}
+
+.dm-preview-samples h5 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sample-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.sample-tag.add {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.sample-tag.overwrite {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.sample-tag.skip {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.dm-sample-list {
+  display: grid;
+  gap: 6px;
+}
+
+.dm-sample-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #f8fafc;
+  border-radius: 6px;
+  font-size: 12px;
+  border: 1px solid #e2e8f0;
+}
+
+.dm-sample-item.overwrite {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 10px;
+}
+
+.dm-sample-case {
+  font-weight: 500;
+  color: #1e293b;
+}
+
+.dm-sample-arrow {
+  color: #94a3b8;
+}
+
+.dm-sample-evidence {
+  color: #64748b;
+}
+
+.dm-sample-status {
+  margin-left: auto;
+  padding: 1px 6px;
+  background: #e2e8f0;
+  border-radius: 10px;
+  font-size: 10px;
+  color: #475569;
+}
+
+.dm-sample-reason {
+  margin-left: auto;
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.dm-sample-item.skip {
+  opacity: 0.7;
+}
+
+.dm-sample-existing,
+.dm-sample-incoming {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.dm-sample-arrow-row {
+  display: flex;
+  justify-content: center;
+  color: #94a3b8;
+  padding: 2px 0;
+}
+
+.dm-sample-label {
+  font-weight: 600;
+  color: #64748b;
+  min-width: 36px;
+}
+
 .dm-recovery-hint {
   font-size: 13px;
   color: #667085;

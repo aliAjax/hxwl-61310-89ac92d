@@ -380,6 +380,69 @@ function analyzeBackupImport(backupText, currentRecords) {
   };
   const overwriteRisk = overlappingIds.length > 0 || overlappingContent.length > 0;
   const riskLevel = overlappingIds.length > 0 ? 'high' : overlappingContent.length > 0 ? 'medium' : 'low';
+
+  const currentIdMap = new Map(currentRecords.map((r) => [r.id, r]));
+  const currentCaseEvidenceMap = new Map(currentRecords.map((r) => [`${r.caseName}||${r.evidence}`, r]));
+
+  function analyzeStrategy(strategy) {
+    const toAdd = [];
+    const toOverwrite = [];
+    const toSkip = [];
+    const overwriteSamples = [];
+    const addSamples = [];
+    const skipSamples = [];
+
+    backupRecords.forEach((r) => {
+      if (strategy === 'addOnly') {
+        const hasIdConflict = r.id && currentIds.has(r.id);
+        const hasContentConflict = currentCaseEvidence.has(`${r.caseName}||${r.evidence}`);
+        if (hasIdConflict || hasContentConflict) {
+          toSkip.push(r);
+          if (skipSamples.length < 3) skipSamples.push(r);
+        } else {
+          toAdd.push(r);
+          if (addSamples.length < 3) addSamples.push(r);
+        }
+      } else if (strategy === 'overwriteById') {
+        if (r.id && currentIdMap.has(r.id)) {
+          toOverwrite.push({ incoming: r, existing: currentIdMap.get(r.id) });
+          if (overwriteSamples.length < 3) overwriteSamples.push({ incoming: r, existing: currentIdMap.get(r.id) });
+        } else {
+          toAdd.push(r);
+          if (addSamples.length < 3) addSamples.push(r);
+        }
+      } else if (strategy === 'mergeByCaseEvidence') {
+        const key = `${r.caseName}||${r.evidence}`;
+        if (currentCaseEvidenceMap.has(key)) {
+          toOverwrite.push({ incoming: r, existing: currentCaseEvidenceMap.get(key) });
+          if (overwriteSamples.length < 3) overwriteSamples.push({ incoming: r, existing: currentCaseEvidenceMap.get(key) });
+        } else if (r.id && currentIdMap.has(r.id)) {
+          toOverwrite.push({ incoming: r, existing: currentIdMap.get(r.id) });
+          if (overwriteSamples.length < 3) overwriteSamples.push({ incoming: r, existing: currentIdMap.get(r.id) });
+        } else {
+          toAdd.push(r);
+          if (addSamples.length < 3) addSamples.push(r);
+        }
+      }
+    });
+
+    return {
+      strategy,
+      addCount: toAdd.length,
+      overwriteCount: toOverwrite.length,
+      skipCount: toSkip.length,
+      addSamples,
+      overwriteSamples,
+      skipSamples,
+    };
+  }
+
+  const strategyPreviews = {
+    addOnly: analyzeStrategy('addOnly'),
+    overwriteById: analyzeStrategy('overwriteById'),
+    mergeByCaseEvidence: analyzeStrategy('mergeByCaseEvidence'),
+  };
+
   return {
     hasData: true,
     parseError: false,
@@ -389,6 +452,7 @@ function analyzeBackupImport(backupText, currentRecords) {
     conflictAnalysis: { overlappingIds: overlappingIds.length, overlappingContent: overlappingContent.length, overwriteRisk, riskLevel },
     backupCounts,
     currentCount: currentRecords.length,
+    strategyPreviews,
   };
 }
 
@@ -1367,6 +1431,7 @@ function App() {
   const [dataMgmtTab, setDataMgmtTab] = useState('version');
   const [backupImportText, setBackupImportText] = useState('');
   const [backupImportAnalysis, setBackupImportAnalysis] = useState(null);
+  const [mergeStrategy, setMergeStrategy] = useState('addOnly');
   const [showEvidencePicker, setShowEvidencePicker] = useState(false);
   const [evidencePickerSearch, setEvidencePickerSearch] = useState('');
   const [rollbackStatus, setRollbackStatus] = useState(null);
@@ -2498,6 +2563,7 @@ function App() {
     setShowDataMgmt(false);
     setBackupImportText('');
     setBackupImportAnalysis(null);
+    setMergeStrategy('addOnly');
     setRollbackStatus(null);
   }
 
@@ -2519,25 +2585,122 @@ function App() {
     event.target.value = '';
   }
 
-  function confirmBackupImport() {
+  function prepareIncomingRecord(r, strategy, by) {
+    return {
+      ...r,
+      id: r.id || uid(),
+      status: r.status || appConfig.primaryStatus,
+      timeline: r.timeline && Array.isArray(r.timeline) && r.timeline.length > 0
+        ? r.timeline
+        : [{ status: r.status || appConfig.primaryStatus, at: today, by }],
+      createdAt: r.createdAt || new Date().toISOString(),
+    };
+  }
+
+  function confirmMergeImport() {
     if (!backupImportAnalysis || !backupImportAnalysis.hasData || backupImportAnalysis.parseError) return;
-    const currentIds = new Set(records.map((r) => r.id));
-    const incomingRecords = backupImportAnalysis.backupRecords.map((r) => {
-      let id = r.id;
-      if (!id || currentIds.has(id)) {
-        id = uid();
+
+    const preview = backupImportAnalysis.strategyPreviews[mergeStrategy];
+    if (!preview) return;
+
+    const currentIdMap = new Map(records.map((r) => [r.id, r]));
+    const currentCaseEvidenceMap = new Map(records.map((r) => [`${r.caseName}||${r.evidence}`, r]));
+    const newIdSet = new Set(records.map((r) => r.id));
+
+    const finalRecords = [...records];
+    const overwrittenIds = new Set();
+    let addCount = 0;
+    let overwriteCount = 0;
+
+    const by = mergeStrategy === 'addOnly' ? '备份导入（仅新增）'
+      : mergeStrategy === 'overwriteById' ? '备份导入（按ID覆盖）'
+      : '备份导入（按案件+证据合并）';
+
+    backupImportAnalysis.backupRecords.forEach((r) => {
+      if (mergeStrategy === 'addOnly') {
+        const hasIdConflict = r.id && currentIdMap.has(r.id);
+        const hasContentConflict = currentCaseEvidenceMap.has(`${r.caseName}||${r.evidence}`);
+        if (hasIdConflict || hasContentConflict) {
+          return;
+        }
+        let id = r.id;
+        if (!id || newIdSet.has(id)) {
+          id = uid();
+        }
+        newIdSet.add(id);
+        finalRecords.push(prepareIncomingRecord({ ...r, id }, mergeStrategy, by));
+        addCount++;
+      } else if (mergeStrategy === 'overwriteById') {
+        if (r.id && currentIdMap.has(r.id) && !overwrittenIds.has(r.id)) {
+          const idx = finalRecords.findIndex((rec) => rec.id === r.id);
+          if (idx !== -1) {
+            const existing = finalRecords[idx];
+            finalRecords[idx] = prepareIncomingRecord({
+              ...r,
+              id: r.id,
+              createdAt: existing.createdAt,
+            }, mergeStrategy, by);
+            overwrittenIds.add(r.id);
+            overwriteCount++;
+          }
+        } else {
+          let id = r.id;
+          if (!id || newIdSet.has(id)) {
+            id = uid();
+          }
+          newIdSet.add(id);
+          finalRecords.push(prepareIncomingRecord({ ...r, id }, mergeStrategy, by));
+          addCount++;
+        }
+      } else if (mergeStrategy === 'mergeByCaseEvidence') {
+        const key = `${r.caseName}||${r.evidence}`;
+        let matched = false;
+        if (currentCaseEvidenceMap.has(key)) {
+          const existing = currentCaseEvidenceMap.get(key);
+          if (!overwrittenIds.has(existing.id)) {
+            const idx = finalRecords.findIndex((rec) => rec.id === existing.id);
+            if (idx !== -1) {
+              finalRecords[idx] = prepareIncomingRecord({
+                ...r,
+                id: existing.id,
+                createdAt: existing.createdAt,
+              }, mergeStrategy, by);
+              overwrittenIds.add(existing.id);
+              overwriteCount++;
+              matched = true;
+            }
+          }
+        }
+        if (!matched && r.id && currentIdMap.has(r.id) && !overwrittenIds.has(r.id)) {
+          const idx = finalRecords.findIndex((rec) => rec.id === r.id);
+          if (idx !== -1) {
+            const existing = finalRecords[idx];
+            finalRecords[idx] = prepareIncomingRecord({
+              ...r,
+              id: r.id,
+              createdAt: existing.createdAt,
+            }, mergeStrategy, by);
+            overwrittenIds.add(r.id);
+            overwriteCount++;
+            matched = true;
+          }
+        }
+        if (!matched) {
+          let id = r.id;
+          if (!id || newIdSet.has(id)) {
+            id = uid();
+          }
+          newIdSet.add(id);
+          finalRecords.push(prepareIncomingRecord({ ...r, id }, mergeStrategy, by));
+          addCount++;
+        }
       }
-      currentIds.add(id);
-      return {
-        ...r,
-        id,
-        status: r.status || appConfig.primaryStatus,
-        timeline: r.timeline && Array.isArray(r.timeline) && r.timeline.length > 0
-          ? r.timeline
-          : [{ status: r.status || appConfig.primaryStatus, at: today, by: '备份导入' }],
-        createdAt: r.createdAt || new Date().toISOString(),
-      };
     });
+
+    const strategyDesc = mergeStrategy === 'addOnly' ? '仅新增'
+      : mergeStrategy === 'overwriteById' ? '按ID覆盖'
+      : '按案件+证据合并';
+
     const snapshotResult = createSnapshot(records, CURRENT_SCHEMA_VERSION);
     if (snapshotResult.success) {
       addMigrationRecord({
@@ -2545,48 +2708,28 @@ function App() {
         toVersion: CURRENT_SCHEMA_VERSION,
         timestamp: new Date().toISOString(),
         status: 'success',
-        description: '备份文件导入',
+        description: `备份导入（${strategyDesc}）- 新增${addCount}条，覆盖${overwriteCount}条`,
         snapshotKey: snapshotResult.snapshotKey,
-        recordCount: incomingRecords.length,
+        recordCount: finalRecords.length,
+        importDetails: {
+          strategy: mergeStrategy,
+          addCount,
+          overwriteCount,
+          skipCount: backupImportAnalysis.backupRecords.length - addCount - overwriteCount,
+        },
       });
     }
-    persist([...incomingRecords, ...records]);
+
+    persist(ensureRecordIntegrity(finalRecords));
     closeDataMgmt();
   }
 
+  function confirmBackupImport() {
+    confirmMergeImport();
+  }
+
   function confirmBackupReplace() {
-    if (!backupImportAnalysis || !backupImportAnalysis.hasData || backupImportAnalysis.parseError) return;
-    const seenIds = new Set();
-    const incomingRecords = backupImportAnalysis.backupRecords.map((r) => {
-      let id = r.id;
-      if (!id || seenIds.has(id)) {
-        id = uid();
-      }
-      seenIds.add(id);
-      return {
-        ...r,
-        id,
-        status: r.status || appConfig.primaryStatus,
-        timeline: r.timeline && Array.isArray(r.timeline) && r.timeline.length > 0
-          ? r.timeline
-          : [{ status: r.status || appConfig.primaryStatus, at: today, by: '备份导入替换' }],
-        createdAt: r.createdAt || new Date().toISOString(),
-      };
-    });
-    const snapshotResult = createSnapshot(records, CURRENT_SCHEMA_VERSION);
-    if (snapshotResult.success) {
-      addMigrationRecord({
-        fromVersion: CURRENT_SCHEMA_VERSION,
-        toVersion: CURRENT_SCHEMA_VERSION,
-        timestamp: new Date().toISOString(),
-        status: 'success',
-        description: '备份文件替换导入',
-        snapshotKey: snapshotResult.snapshotKey,
-        recordCount: incomingRecords.length,
-      });
-    }
-    persist(incomingRecords);
-    closeDataMgmt();
+    confirmMergeImport();
   }
 
   function handleRollback(snapshotKey) {
@@ -6271,18 +6414,160 @@ function App() {
                           {backupImportAnalysis.conflictAnalysis.riskLevel !== 'low' && (
                             <p className="dm-risk-advice">
                               {backupImportAnalysis.conflictAnalysis.riskLevel === 'high'
-                                ? '存在ID冲突，建议选择「替换全部」以避免数据混乱，或先导出当前备份再操作'
-                                : '存在内容重复，导入后将产生重复记录，建议选择「替换全部」或手动合并'}
+                                ? '存在ID冲突，建议选择「按ID覆盖」以避免数据混乱，或先导出当前备份再操作'
+                                : '存在内容重复，建议选择「按案件+证据材料合并」或手动处理'}
                             </p>
                           )}
                         </div>
 
+                        <div className="dm-merge-strategy">
+                          <h4><Layers size={16} /> 合并策略选择</h4>
+                          <div className="dm-strategy-options">
+                            <label className={`dm-strategy-option ${mergeStrategy === 'addOnly' ? 'active' : ''}`}>
+                              <input
+                                type="radio"
+                                name="mergeStrategy"
+                                value="addOnly"
+                                checked={mergeStrategy === 'addOnly'}
+                                onChange={(e) => setMergeStrategy(e.target.value)}
+                              />
+                              <div className="dm-strategy-content">
+                                <div className="dm-strategy-title"><Plus size={14} /> 只新增</div>
+                                <div className="dm-strategy-desc">仅导入没有冲突的新记录，ID或内容冲突的记录将被跳过</div>
+                              </div>
+                            </label>
+                            <label className={`dm-strategy-option ${mergeStrategy === 'overwriteById' ? 'active' : ''}`}>
+                              <input
+                                type="radio"
+                                name="mergeStrategy"
+                                value="overwriteById"
+                                checked={mergeStrategy === 'overwriteById'}
+                                onChange={(e) => setMergeStrategy(e.target.value)}
+                              />
+                              <div className="dm-strategy-content">
+                                <div className="dm-strategy-title"><ArrowRightLeft size={14} /> 按ID覆盖</div>
+                                <div className="dm-strategy-desc">ID相同的记录将被备份数据覆盖，无ID或ID不冲突的作为新记录添加</div>
+                              </div>
+                            </label>
+                            <label className={`dm-strategy-option ${mergeStrategy === 'mergeByCaseEvidence' ? 'active' : ''}`}>
+                              <input
+                                type="radio"
+                                name="mergeStrategy"
+                                value="mergeByCaseEvidence"
+                                checked={mergeStrategy === 'mergeByCaseEvidence'}
+                                onChange={(e) => setMergeStrategy(e.target.value)}
+                              />
+                              <div className="dm-strategy-content">
+                                <div className="dm-strategy-title"><GitBranch size={14} /> 按案件+证据材料合并</div>
+                                <div className="dm-strategy-desc">优先按「案件名称+证据材料」匹配覆盖，其次按ID匹配，无匹配则新增</div>
+                              </div>
+                            </label>
+                          </div>
+                        </div>
+
+                        {backupImportAnalysis.strategyPreviews && backupImportAnalysis.strategyPreviews[mergeStrategy] && (
+                          <div className="dm-merge-preview">
+                            <h4><Eye size={16} /> 导入预览</h4>
+                            <div className="dm-preview-stats">
+                              <div className="dm-preview-stat add">
+                                <Plus size={16} />
+                                <div>
+                                  <span>新增</span>
+                                  <strong>{backupImportAnalysis.strategyPreviews[mergeStrategy].addCount}</strong>
+                                </div>
+                              </div>
+                              <div className="dm-preview-stat overwrite">
+                                <ArrowRightLeft size={16} />
+                                <div>
+                                  <span>覆盖</span>
+                                  <strong>{backupImportAnalysis.strategyPreviews[mergeStrategy].overwriteCount}</strong>
+                                </div>
+                              </div>
+                              <div className="dm-preview-stat skip">
+                                <X size={16} />
+                                <div>
+                                  <span>跳过</span>
+                                  <strong>{backupImportAnalysis.strategyPreviews[mergeStrategy].skipCount}</strong>
+                                </div>
+                              </div>
+                            </div>
+
+                            {backupImportAnalysis.strategyPreviews[mergeStrategy].addSamples.length > 0 && (
+                              <div className="dm-preview-samples">
+                                <h5><span className="sample-tag add">新增样例</span></h5>
+                                <div className="dm-sample-list">
+                                  {backupImportAnalysis.strategyPreviews[mergeStrategy].addSamples.map((s, i) => (
+                                    <div key={i} className="dm-sample-item">
+                                      <span className="dm-sample-case">{s.caseName}</span>
+                                      <span className="dm-sample-arrow">→</span>
+                                      <span className="dm-sample-evidence">{s.evidence}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {backupImportAnalysis.strategyPreviews[mergeStrategy].overwriteSamples.length > 0 && (
+                              <div className="dm-preview-samples">
+                                <h5><span className="sample-tag overwrite">覆盖样例</span></h5>
+                                <div className="dm-sample-list">
+                                  {backupImportAnalysis.strategyPreviews[mergeStrategy].overwriteSamples.map((s, i) => (
+                                    <div key={i} className="dm-sample-item overwrite">
+                                      <div className="dm-sample-existing">
+                                        <span className="dm-sample-label">现有:</span>
+                                        <span className="dm-sample-case">{s.existing.caseName}</span>
+                                        <span className="dm-sample-evidence">{s.existing.evidence}</span>
+                                        <span className="dm-sample-status">{s.existing.status}</span>
+                                      </div>
+                                      <div className="dm-sample-arrow-row">
+                                        <ArrowRight size={12} />
+                                      </div>
+                                      <div className="dm-sample-incoming">
+                                        <span className="dm-sample-label">导入:</span>
+                                        <span className="dm-sample-case">{s.incoming.caseName}</span>
+                                        <span className="dm-sample-evidence">{s.incoming.evidence}</span>
+                                        <span className="dm-sample-status">{s.incoming.status}</span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+
+                            {backupImportAnalysis.strategyPreviews[mergeStrategy].skipSamples.length > 0 && (
+                              <div className="dm-preview-samples">
+                                <h5><span className="sample-tag skip">跳过样例</span></h5>
+                                <div className="dm-sample-list">
+                                  {backupImportAnalysis.strategyPreviews[mergeStrategy].skipSamples.map((s, i) => (
+                                    <div key={i} className="dm-sample-item skip">
+                                      <span className="dm-sample-case">{s.caseName}</span>
+                                      <span className="dm-sample-arrow">→</span>
+                                      <span className="dm-sample-evidence">{s.evidence}</span>
+                                      <span className="dm-sample-reason">（已存在）</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         <div className="dm-backup-actions">
-                          <button type="button" className="dm-action-btn" onClick={confirmBackupImport}>
-                            <Plus size={16} /> 追加导入（保留当前数据）
-                          </button>
-                          <button type="button" className="dm-action-btn danger" onClick={confirmBackupReplace}>
-                            <AlertTriangle size={16} /> 替换全部（覆盖当前数据）
+                          <button
+                            type="button"
+                            className="dm-action-btn primary"
+                            onClick={confirmMergeImport}
+                            disabled={!backupImportAnalysis.strategyPreviews || !backupImportAnalysis.strategyPreviews[mergeStrategy]}
+                          >
+                            <CheckCircle2 size={16} /> 确认导入
+                            <span className="dm-action-sub">
+                              （新增{backupImportAnalysis.strategyPreviews?.[mergeStrategy]?.addCount || 0}
+                              {backupImportAnalysis.strategyPreviews?.[mergeStrategy]?.overwriteCount > 0 &&
+                                `，覆盖${backupImportAnalysis.strategyPreviews[mergeStrategy].overwriteCount}`}
+                              {backupImportAnalysis.strategyPreviews?.[mergeStrategy]?.skipCount > 0 &&
+                                `，跳过${backupImportAnalysis.strategyPreviews[mergeStrategy].skipCount}`}
+                              ）
+                            </span>
                           </button>
                         </div>
                       </div>
