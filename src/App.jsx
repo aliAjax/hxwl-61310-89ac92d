@@ -3,6 +3,182 @@ import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, Cl
 import './App.css';
 
 const FACT_NODE_STORAGE = 'hxwl-61310-fact-nodes';
+const REVIEW_STORAGE = 'hxwl-61310-review-checklist';
+
+const REVIEW_ITEM_CATEGORIES = {
+  'evidence-coverage': { label: '证据覆盖', icon: 'Target' },
+  'material-status': { label: '材料状态', icon: 'ClipboardList' },
+  'strengthen-task': { label: '补强任务', icon: 'AlertTriangle' },
+  'secrecy-level': { label: '保密等级', icon: 'Shield' },
+  'purpose-completeness': { label: '证明目的完整性', icon: 'CheckCircle2' },
+};
+
+function generateReviewChecklist(caseName, records, tasks, customIssues) {
+  const caseRecords = records.filter((r) => r.caseName === caseName);
+  const issues = getAllIssues(customIssues, caseName, records);
+  const caseTasks = tasks.filter((t) => t.caseName === caseName);
+  const items = [];
+
+  issues.forEach((issue) => {
+    const issueRecords = caseRecords.filter((r) => r.issue === issue);
+    const pendingRecords = issueRecords.filter((r) => r.status === '待核对');
+    const strengthenRecords = issueRecords.filter((r) => r.status === '需补强');
+    const noPurposeRecords = issueRecords.filter((r) => !r.purpose || !r.purpose.trim());
+    const confidentialRecords = issueRecords.filter((r) => r.level === '机密');
+    const issueTasks = caseTasks.filter((t) => t.issue === issue);
+    const unfinishedTasks = issueTasks.filter((t) => t.status !== '已完成' && t.status !== '已取消');
+
+    if (issueRecords.length === 0) {
+      items.push({
+        id: `coverage-none-${issue}`,
+        category: 'evidence-coverage',
+        issue,
+        title: `争议点「${issue}」无任何证据`,
+        severity: 'high',
+        description: `该争议点尚未关联任何证据材料，出庭时无法就该项主张提供证据支持`,
+        linkType: 'coverage',
+        linkIssue: issue,
+        checked: false,
+      });
+    } else if (strengthenRecords.length > 0) {
+      items.push({
+        id: `coverage-strengthen-${issue}`,
+        category: 'evidence-coverage',
+        issue,
+        title: `争议点「${issue}」存在${strengthenRecords.length}项需补强证据`,
+        severity: 'high',
+        description: `证据覆盖不充分，${strengthenRecords.length}项证据标注为"需补强"，可能影响证明力`,
+        linkType: 'coverage',
+        linkIssue: issue,
+        evidenceIds: strengthenRecords.map((r) => r.id),
+        checked: false,
+      });
+    } else if (pendingRecords.length === issueRecords.length) {
+      items.push({
+        id: `coverage-pending-${issue}`,
+        category: 'evidence-coverage',
+        issue,
+        title: `争议点「${issue}」全部证据待核对`,
+        severity: 'medium',
+        description: `${pendingRecords.length}项证据均未核对，出庭前需完成核对确认`,
+        linkType: 'coverage',
+        linkIssue: issue,
+        evidenceIds: pendingRecords.map((r) => r.id),
+        checked: false,
+      });
+    }
+
+    pendingRecords.forEach((r) => {
+      items.push({
+        id: `status-pending-${r.id}`,
+        category: 'material-status',
+        issue,
+        evidenceId: r.id,
+        evidenceName: r.evidence,
+        title: `证据「${r.evidence}」尚待核对`,
+        severity: 'medium',
+        description: `该证据状态为"待核对"，需在出庭前完成核对确认`,
+        linkType: 'evidence',
+        linkEvidenceId: r.id,
+        checked: false,
+      });
+    });
+
+    strengthenRecords.forEach((r) => {
+      items.push({
+        id: `status-strengthen-${r.id}`,
+        category: 'material-status',
+        issue,
+        evidenceId: r.id,
+        evidenceName: r.evidence,
+        title: `证据「${r.evidence}」需补强`,
+        severity: 'high',
+        description: `该证据标注为"需补强"，证明力不足，出庭时可能被对方质疑`,
+        linkType: 'evidence',
+        linkEvidenceId: r.id,
+        checked: false,
+      });
+    });
+
+    unfinishedTasks.forEach((task) => {
+      items.push({
+        id: `task-unfinished-${task.id}`,
+        category: 'strengthen-task',
+        issue,
+        taskId: task.id,
+        taskName: task.evidenceName || task.issue,
+        title: `补强任务「${task.evidenceName || task.issue}」未完成（${task.status}）`,
+        severity: task.status === '待处理' ? 'high' : 'medium',
+        description: `补强任务当前状态为"${task.status}"，${task.deadline ? `截止日期：${task.deadline}` : '未设截止日期'}，${task.reason || ''}`,
+        linkType: 'task',
+        linkTaskId: task.id,
+        checked: false,
+      });
+    });
+
+    if (confidentialRecords.length > 0) {
+      items.push({
+        id: `secrecy-confidential-${issue}`,
+        category: 'secrecy-level',
+        issue,
+        title: `争议点「${issue}」含${confidentialRecords.length}项机密材料`,
+        severity: 'medium',
+        description: `出庭时需注意保密处理，公开模式下将脱敏展示，内部模式下可见但需注意法庭披露范围`,
+        linkType: 'coverage',
+        linkIssue: issue,
+        evidenceIds: confidentialRecords.map((r) => r.id),
+        checked: false,
+      });
+    }
+
+    noPurposeRecords.forEach((r) => {
+      items.push({
+        id: `purpose-missing-${r.id}`,
+        category: 'purpose-completeness',
+        issue,
+        evidenceId: r.id,
+        evidenceName: r.evidence,
+        title: `证据「${r.evidence}」缺少证明目的`,
+        severity: 'medium',
+        description: `该证据未填写证明目的，出庭时可能无法明确该证据的证明指向，影响举证效果`,
+        linkType: 'evidence',
+        linkEvidenceId: r.id,
+        checked: false,
+      });
+    });
+  });
+
+  return items;
+}
+
+function loadReviewData() {
+  try {
+    const raw = localStorage.getItem(REVIEW_STORAGE);
+    if (!raw) return {};
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function saveReviewData(data) {
+  localStorage.setItem(REVIEW_STORAGE, JSON.stringify(data));
+}
+
+function getReviewKey(caseName) {
+  return caseName;
+}
+
+function loadCaseReview(caseName) {
+  const all = loadReviewData();
+  return all[caseName] || null;
+}
+
+function saveCaseReview(caseName, reviewState) {
+  const all = loadReviewData();
+  all[caseName] = reviewState;
+  saveReviewData(all);
+}
 
 const appConfig = {
   "id": "hxwl-61310",
@@ -1990,6 +2166,96 @@ function App() {
   const [wpResolutions, setWpResolutions] = useState({ records: [], customIssues: [], purposeTemplates: [], tasks: [], factNodes: [] });
   const [wpMergeSection, setWpMergeSection] = useState('records');
   const [wpMergeStatus, setWpMergeStatus] = useState(null);
+  const [reviewCheckItems, setReviewCheckItems] = useState({});
+  const [reviewFilterCat, setReviewFilterCat] = useState('all');
+  const [reviewFilterSeverity, setReviewFilterSeverity] = useState('all');
+  const [reviewPassedAt, setReviewPassedAt] = useState(null);
+
+  const wbReviewChecklist = useMemo(() => {
+    if (!workbenchCase) return [];
+    const generated = generateReviewChecklist(workbenchCase, records, tasks, customIssues);
+    const saved = reviewCheckItems[workbenchCase] || {};
+    return generated.map((item) => ({
+      ...item,
+      checked: saved[item.id]?.checked ?? false,
+    }));
+  }, [records, tasks, customIssues, workbenchCase, reviewCheckItems]);
+
+  const wbReviewStats = useMemo(() => {
+    if (!wbReviewChecklist || wbReviewChecklist.length === 0) return null;
+    const total = wbReviewChecklist.length;
+    const checked = wbReviewChecklist.filter((i) => i.checked).length;
+    const highItems = wbReviewChecklist.filter((i) => i.severity === 'high');
+    const highChecked = highItems.filter((i) => i.checked).length;
+    const byCategory = {};
+    Object.keys(REVIEW_ITEM_CATEGORIES).forEach((cat) => {
+      const catItems = wbReviewChecklist.filter((i) => i.category === cat);
+      byCategory[cat] = { total: catItems.length, checked: catItems.filter((i) => i.checked).length };
+    });
+    const unresolvedHighRisk = wbReviewChecklist.filter((i) => i.severity === 'high' && !i.checked);
+    return { total, checked, highTotal: highItems.length, highChecked, byCategory, unresolvedHighRisk, passable: total > 0 && checked === total };
+  }, [wbReviewChecklist]);
+
+  useEffect(() => {
+    if (!workbenchCase) return;
+    const saved = loadCaseReview(workbenchCase);
+    if (saved) {
+      setReviewCheckItems((prev) => ({ ...prev, [workbenchCase]: saved.checkItems || {} }));
+      setReviewPassedAt(saved.passedAt || null);
+    } else {
+      setReviewCheckItems((prev) => ({ ...prev, [workbenchCase]: {} }));
+      setReviewPassedAt(null);
+    }
+  }, [workbenchCase]);
+
+  function toggleReviewItem(itemId) {
+    if (!workbenchCase) return;
+    setReviewCheckItems((prev) => {
+      const caseItems = prev[workbenchCase] || {};
+      const currentChecked = caseItems[itemId]?.checked ?? false;
+      const next = {
+        ...prev,
+        [workbenchCase]: {
+          ...caseItems,
+          [itemId]: { checked: !currentChecked, toggledAt: new Date().toISOString() },
+        },
+      };
+      const reviewState = { checkItems: next[workbenchCase], passedAt: reviewPassedAt, updatedAt: new Date().toISOString() };
+      saveCaseReview(workbenchCase, reviewState);
+      return next;
+    });
+  }
+
+  function markReviewPassed() {
+    if (!workbenchCase || !wbReviewStats?.passable) return;
+    const now = new Date().toISOString();
+    setReviewPassedAt(now);
+    const caseItems = reviewCheckItems[workbenchCase] || {};
+    const reviewState = { checkItems: caseItems, passedAt: now, updatedAt: now };
+    saveCaseReview(workbenchCase, reviewState);
+  }
+
+  function resetReview() {
+    if (!workbenchCase) return;
+    setReviewCheckItems((prev) => ({ ...prev, [workbenchCase]: {} }));
+    setReviewPassedAt(null);
+    const reviewState = { checkItems: {}, passedAt: null, updatedAt: new Date().toISOString() };
+    saveCaseReview(workbenchCase, reviewState);
+  }
+
+  function navigateReviewItem(item) {
+    if (item.linkType === 'coverage') {
+      setWorkbenchTab('coverage');
+    } else if (item.linkType === 'evidence') {
+      const ev = records.find((r) => r.id === item.linkEvidenceId);
+      if (ev) setSelected(ev);
+      setWorkbenchTab('evidence');
+    } else if (item.linkType === 'task') {
+      const task = tasks.find((t) => t.id === item.linkTaskId);
+      if (task) navigateToTaskContext(task);
+      setWorkbenchTab('tasks');
+    }
+  }
 
   const DATA_MGMT_TABS = [
     { key: 'version', label: '版本信息', icon: Database },
@@ -2004,6 +2270,7 @@ function App() {
     { key: 'coverage', label: '争议点覆盖', icon: Target },
     { key: 'timeline', label: '证据链时间线', icon: GitBranch },
     { key: 'tasks', label: '补强任务', icon: AlertTriangle },
+    { key: 'review', label: '出庭审查', icon: ListChecks },
     { key: 'export', label: '导出预览', icon: Eye },
   ];
 
@@ -3686,7 +3953,7 @@ function App() {
           <div className="workbench-empty">
             <LayoutGrid size={48} />
             <h3>选择案件，进入专属工作台</h3>
-            <p>在同一工作区内切换查看证据录入、争议点覆盖、证据链时间线、补强任务和导出预览</p>
+            <p>在同一工作区内切换查看证据录入、争议点覆盖、证据链时间线、补强任务、出庭审查和导出预览</p>
           </div>
         ) : (
           <>
@@ -4284,6 +4551,148 @@ function App() {
                 </div>
               )}
 
+              {workbenchTab === 'review' && (
+                <div className="wb-review-tab">
+                  {wbReviewChecklist.length > 0 ? (
+                    <>
+                      <div className="wb-review-header">
+                        <div className="wb-review-stats-row">
+                          <div className="wb-rev-stat wb-rev-total">
+                            <ListChecks size={18} />
+                            <strong>{wbReviewStats.total}</strong>
+                            <span>审查项</span>
+                          </div>
+                          <div className="wb-rev-stat wb-rev-checked">
+                            <CheckCircle2 size={18} />
+                            <strong>{wbReviewStats.checked}</strong>
+                            <span>已确认</span>
+                          </div>
+                          <div className="wb-rev-stat wb-rev-high">
+                            <AlertTriangle size={18} />
+                            <strong>{wbReviewStats.highTotal}</strong>
+                            <span>高风险</span>
+                          </div>
+                          <div className="wb-rev-stat wb-rev-progress">
+                            <div className="wb-rev-progress-bar">
+                              <div className="wb-rev-progress-fill" style={{ width: `${wbReviewStats.total ? (wbReviewStats.checked / wbReviewStats.total) * 100 : 0}%` }} />
+                            </div>
+                            <span>{wbReviewStats.total ? Math.round((wbReviewStats.checked / wbReviewStats.total) * 100) : 0}%</span>
+                          </div>
+                        </div>
+                        {reviewPassedAt && (
+                          <div className="wb-review-passed-banner">
+                            <CheckCircle2 size={16} />
+                            <span>审查已通过 — {new Date(reviewPassedAt).toLocaleString('zh-CN')}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="wb-review-filters">
+                        <div className="wb-review-filter-group">
+                          <span className="wb-filter-label">类别</span>
+                          <select value={reviewFilterCat} onChange={(e) => setReviewFilterCat(e.target.value)}>
+                            <option value="all">全部类别</option>
+                            {Object.entries(REVIEW_ITEM_CATEGORIES).map(([key, cat]) => (
+                              <option key={key} value={key}>{cat.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="wb-review-filter-group">
+                          <span className="wb-filter-label">风险</span>
+                          <select value={reviewFilterSeverity} onChange={(e) => setReviewFilterSeverity(e.target.value)}>
+                            <option value="all">全部风险</option>
+                            <option value="high">高风险</option>
+                            <option value="medium">中风险</option>
+                          </select>
+                        </div>
+                        <div className="wb-review-cat-pills">
+                          {Object.entries(REVIEW_ITEM_CATEGORIES).map(([key, cat]) => {
+                            const stat = wbReviewStats.byCategory[key];
+                            if (!stat || stat.total === 0) return null;
+                            return (
+                              <span key={key} className={`wb-cat-pill ${reviewFilterCat === key ? 'active' : ''}`} onClick={() => setReviewFilterCat(reviewFilterCat === key ? 'all' : key)}>
+                                {cat.label} {stat.checked}/{stat.total}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="wb-review-checklist">
+                        {wbReviewChecklist
+                          .filter((item) => reviewFilterCat === 'all' || item.category === reviewFilterCat)
+                          .filter((item) => reviewFilterSeverity === 'all' || item.severity === reviewFilterSeverity)
+                          .map((item) => {
+                            const catMeta = REVIEW_ITEM_CATEGORIES[item.category];
+                            return (
+                              <div key={item.id} className={`wb-review-item ${item.checked ? 'checked' : ''} ${item.severity === 'high' ? 'high-severity' : ''}`}>
+                                <div className="wb-review-item-check">
+                                  <button type="button" className={`review-checkbox ${item.checked ? 'checked' : ''}`} onClick={() => toggleReviewItem(item.id)}>
+                                    {item.checked && <Check size={14} />}
+                                  </button>
+                                </div>
+                                <div className="wb-review-item-body">
+                                  <div className="wb-review-item-head">
+                                    <span className="wb-review-cat-tag">{catMeta.label}</span>
+                                    <span className={`wb-review-severity-tag ${item.severity}`}>{item.severity === 'high' ? '高风险' : '中风险'}</span>
+                                    {item.issue && <span className="wb-review-issue-tag"><Target size={10} /> {item.issue}</span>}
+                                    <h4>{item.title}</h4>
+                                  </div>
+                                  <p className="wb-review-desc">{item.description}</p>
+                                  <div className="wb-review-item-actions">
+                                    <button type="button" className="review-nav-btn" onClick={() => navigateReviewItem(item)}>
+                                      <ArrowRight size={14} /> 跳转处理
+                                    </button>
+                                    {item.evidenceIds && item.evidenceIds.length > 0 && (
+                                      <span className="wb-review-evidence-count">涉及 {item.evidenceIds.length} 项证据</span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                      </div>
+
+                      {wbReviewStats.unresolvedHighRisk.length > 0 && (
+                        <div className="wb-review-risk-section">
+                          <h3 className="wb-section-title"><AlertTriangle size={16} /> 未解决高风险项</h3>
+                          <div className="wb-review-risk-list">
+                            {wbReviewStats.unresolvedHighRisk.map((item) => (
+                              <div key={item.id} className="wb-risk-item" onClick={() => navigateReviewItem(item)}>
+                                <AlertCircle size={14} />
+                                <span>{item.title}</span>
+                                <ArrowRight size={12} />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="wb-review-footer">
+                        {wbReviewStats.passable && !reviewPassedAt && (
+                          <button type="button" className="primary review-pass-btn" onClick={markReviewPassed}>
+                            <CheckCircle2 size={16} /> 确认审查通过
+                          </button>
+                        )}
+                        {reviewPassedAt && (
+                          <button type="button" className="primary review-pass-btn review-re-pass" onClick={() => { setReviewPassedAt(null); }}>
+                            <RotateCcw size={16} /> 重新审查
+                          </button>
+                        )}
+                        <button type="button" className="secondary review-reset-btn" onClick={resetReview}>
+                          <RotateCcw size={14} /> 重置清单
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="wb-empty-hint">
+                      <ListChecks size={32} />
+                      <p>该案件暂无审查项目 — 所有争议点均已有已核对证据，无待处理风险</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {workbenchTab === 'export' && (
                 <div className="wb-export-tab">
                   <div className="wb-export-config">
@@ -4309,6 +4718,59 @@ function App() {
                     <div className="summary-stat"><div className="summary-icon ok"><Target size={16} /></div><div><span>争议点</span><strong>{new Set(wbExportData.map((i) => i.issue).filter(Boolean)).size}</strong></div></div>
                     <div className="summary-stat warning"><div className="summary-icon warn"><Shield size={16} /></div><div><span>{exportConfig.exportLevel === '机密' ? '机密' : '脱敏'}</span><strong>{exportConfig.exportLevel === '机密' ? wbExportData.filter((i) => i.level === '机密').length : wbExportData.filter((i) => i._masked).length}</strong></div></div>
                   </div>
+
+                  {reviewPassedAt && (
+                    <div className="wb-export-review-info">
+                      <h3 className="wb-section-title"><CheckCircle2 size={16} /> 审查信息</h3>
+                      <div className="wb-review-export-row">
+                        <span className="wb-review-export-label">审查通过时间</span>
+                        <span className="wb-review-export-value">{new Date(reviewPassedAt).toLocaleString('zh-CN')}</span>
+                      </div>
+                      {wbReviewStats && wbReviewStats.unresolvedHighRisk.length > 0 && (
+                        <div className="wb-review-export-row wb-review-export-risk">
+                          <span className="wb-review-export-label"><AlertTriangle size={14} /> 未解决风险提示</span>
+                          <ul className="wb-review-risk-list-export">
+                            {wbReviewStats.unresolvedHighRisk.map((item) => (
+                              <li key={item.id}><AlertCircle size={12} /> {item.title}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {wbExportData.length > 0 && (
+                    <div className="wb-export-material-list">
+                      <h3 className="wb-section-title"><Shield size={16} /> 按保密模式处理后的材料清单</h3>
+                      <div className="wb-material-level-summary">
+                        {['公开', '内部', '机密'].filter((lv) => {
+                          const rank = LEVEL_RANK[lv];
+                          const maxRank = MODE_MAX_VISIBLE_LEVEL[exportConfig.exportLevel] ?? 0;
+                          return rank <= maxRank;
+                        }).map((lv) => {
+                          const lvRecords = wbExportData.filter((r) => (LEVEL_RANK[r.level] ?? 1) === LEVEL_RANK[lv]);
+                          if (lvRecords.length === 0) return null;
+                          return (
+                            <div key={lv} className="wb-material-level-group">
+                              <div className="wb-material-level-head">
+                                <Shield size={14} />
+                                <strong>{lv}材料</strong>
+                                <span>{lvRecords.length} 项</span>
+                              </div>
+                              <div className="wb-material-level-items">
+                                {lvRecords.map((item, idx) => (
+                                  <span key={item.id} className={item._masked ? 'masked-dir-entry' : ''}>
+                                    {idx + 1}. {item.evidence}｜{item.purpose || '无证明目的'}
+                                    {item._masked && <em className="dir-masked-tag"><Shield size={10} />脱敏</em>}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                   {wbExportData.length > 0 ? (
                     <div className="wb-directory-preview">
                       <h3 className="wb-section-title"><FileText size={16} /> 证据目录预览</h3>
