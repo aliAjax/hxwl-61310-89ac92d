@@ -1,6 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Scale, Plus, Search, Trash2, RotateCcw, CheckCircle2, AlertTriangle, ClipboardList, CalendarDays, Upload, FileSpreadsheet, X, Check, AlertCircle, Info, Briefcase, Clock, Shield, Target, ChevronDown, ChevronUp, BarChart3, Bookmark, BookmarkCheck, Printer, Eye, FileText, GitBranch, CircleDot, Filter, LayoutGrid, Layers, ListChecks, ArrowRight, ArrowRightLeft, Database, History, Download, Star, Settings, Link2, ArrowLeft } from 'lucide-react';
 import './App.css';
+import {
+  FIELD_ALIASES,
+  REQUIRED_FIELDS,
+  ALL_FIELDS,
+  parseCSV,
+  matchField,
+  buildImportPreview,
+  getAllIssues,
+  computeIssueCoverage,
+  COVERAGE_STATUS_META,
+  isTaskOverdue,
+  getTaskDaysLeft,
+} from './utils';
 
 const FACT_NODE_STORAGE = 'hxwl-61310-fact-nodes';
 const REVIEW_STORAGE = 'hxwl-61310-review-checklist';
@@ -15,7 +28,8 @@ const REVIEW_ITEM_CATEGORIES = {
 
 function generateReviewChecklist(caseName, records, tasks, customIssues) {
   const caseRecords = records.filter((r) => r.caseName === caseName);
-  const issues = getAllIssues(customIssues, caseName, records);
+  const builtInIssues = appConfig.fields.find((f) => f.key === 'issue')?.options || [];
+  const issues = getAllIssues(customIssues, caseName, records, builtInIssues);
   const caseTasks = tasks.filter((t) => t.caseName === caseName);
   const items = [];
 
@@ -101,8 +115,8 @@ function generateReviewChecklist(caseName, records, tasks, customIssues) {
     });
 
     unfinishedTasks.forEach((task) => {
-      const overdue = isTaskOverdue(task);
-      const daysLeft = getTaskDaysLeft(task);
+      const overdue = isTaskOverdue(task, today);
+      const daysLeft = getTaskDaysLeft(task, today);
       let severity = task.status === '待处理' ? 'high' : 'medium';
       if (overdue) severity = 'high';
       let timeDesc = '';
@@ -1165,20 +1179,7 @@ function getEvidenceFactNodeMap(nodes) {
   return map;
 }
 
-function isTaskOverdue(task) {
-  if (!task.deadline || task.status === '已完成' || task.status === '已取消') return false;
-  const deadlineDate = new Date(task.deadline);
-  const now = new Date(today);
-  return deadlineDate < now;
-}
 
-function getTaskDaysLeft(task) {
-  if (!task.deadline) return null;
-  const deadlineDate = new Date(task.deadline);
-  const now = new Date(today);
-  const diff = Math.ceil((deadlineDate.getTime() - now.getTime()) / 86400000);
-  return diff;
-}
 
 function getTasksForEvidence(tasks, evidenceId) {
   return tasks.filter((task) => task.evidenceId === evidenceId);
@@ -1225,7 +1226,7 @@ function buildCaseTaskBoard(tasks, records, customIssues) {
     else if (task.status === '处理中') cb.inProgress += 1;
     else if (task.status === '已完成') cb.completed += 1;
     else if (task.status === '已取消') cb.cancelled += 1;
-    if (isTaskOverdue(task)) cb.overdue += 1;
+    if (isTaskOverdue(task, today)) cb.overdue += 1;
 
     const issueName = task.issue || '未分类';
     if (!cb.issues[issueName]) {
@@ -1245,7 +1246,7 @@ function buildCaseTaskBoard(tasks, records, customIssues) {
     else if (task.status === '处理中') cb.issues[issueName].inProgress += 1;
     else if (task.status === '已完成') cb.issues[issueName].completed += 1;
     else if (task.status === '已取消') cb.issues[issueName].cancelled += 1;
-    if (isTaskOverdue(task)) cb.issues[issueName].overdue += 1;
+    if (isTaskOverdue(task, today)) cb.issues[issueName].overdue += 1;
     cb.issues[issueName].tasks.push(task);
 
     const assignee = task.assignee || '未分配';
@@ -1253,7 +1254,7 @@ function buildCaseTaskBoard(tasks, records, customIssues) {
       cb.assignees[assignee] = { name: assignee, total: 0, overdue: 0, pending: 0, inProgress: 0, completed: 0 };
     }
     cb.assignees[assignee].total += 1;
-    if (isTaskOverdue(task)) cb.assignees[assignee].overdue += 1;
+    if (isTaskOverdue(task, today)) cb.assignees[assignee].overdue += 1;
     if (task.status === '待处理') cb.assignees[assignee].pending += 1;
     else if (task.status === '处理中') cb.assignees[assignee].inProgress += 1;
     else if (task.status === '已完成') cb.assignees[assignee].completed += 1;
@@ -1292,7 +1293,7 @@ function buildIssueTaskBoard(tasks, records, customIssues) {
     else if (task.status === '处理中') ib.inProgress += 1;
     else if (task.status === '已完成') ib.completed += 1;
     else if (task.status === '已取消') ib.cancelled += 1;
-    if (isTaskOverdue(task)) ib.overdue += 1;
+    if (isTaskOverdue(task, today)) ib.overdue += 1;
     ib.tasks.push(task);
 
     const caseName = task.caseName || '未分类案件';
@@ -1300,7 +1301,7 @@ function buildIssueTaskBoard(tasks, records, customIssues) {
       ib.cases[caseName] = { name: caseName, total: 0, overdue: 0, pending: 0, inProgress: 0, completed: 0, tasks: [] };
     }
     ib.cases[caseName].total += 1;
-    if (isTaskOverdue(task)) ib.cases[caseName].overdue += 1;
+    if (isTaskOverdue(task, today)) ib.cases[caseName].overdue += 1;
     if (task.status === '待处理') ib.cases[caseName].pending += 1;
     else if (task.status === '处理中') ib.cases[caseName].inProgress += 1;
     else if (task.status === '已完成') ib.cases[caseName].completed += 1;
@@ -1311,7 +1312,7 @@ function buildIssueTaskBoard(tasks, records, customIssues) {
       ib.assignees[assignee] = { name: assignee, total: 0, overdue: 0 };
     }
     ib.assignees[assignee].total += 1;
-    if (isTaskOverdue(task)) ib.assignees[assignee].overdue += 1;
+    if (isTaskOverdue(task, today)) ib.assignees[assignee].overdue += 1;
   });
 
   const issueList = Object.values(issueMap).map((i) => ({
@@ -1347,7 +1348,7 @@ function buildAssigneeTaskBoard(tasks, records, customIssues) {
     else if (task.status === '处理中') ab.inProgress += 1;
     else if (task.status === '已完成') ab.completed += 1;
     else if (task.status === '已取消') ab.cancelled += 1;
-    if (isTaskOverdue(task)) ab.overdue += 1;
+    if (isTaskOverdue(task, today)) ab.overdue += 1;
     ab.tasks.push(task);
 
     const caseName = task.caseName || '未分类案件';
@@ -1355,7 +1356,7 @@ function buildAssigneeTaskBoard(tasks, records, customIssues) {
       ab.cases[caseName] = { name: caseName, total: 0, overdue: 0, pending: 0, inProgress: 0, completed: 0 };
     }
     ab.cases[caseName].total += 1;
-    if (isTaskOverdue(task)) ab.cases[caseName].overdue += 1;
+    if (isTaskOverdue(task, today)) ab.cases[caseName].overdue += 1;
     if (task.status === '待处理') ab.cases[caseName].pending += 1;
     else if (task.status === '处理中') ab.cases[caseName].inProgress += 1;
     else if (task.status === '已完成') ab.cases[caseName].completed += 1;
@@ -1365,7 +1366,7 @@ function buildAssigneeTaskBoard(tasks, records, customIssues) {
       ab.issues[issueName] = { name: issueName, total: 0, overdue: 0 };
     }
     ab.issues[issueName].total += 1;
-    if (isTaskOverdue(task)) ab.issues[issueName].overdue += 1;
+    if (isTaskOverdue(task, today)) ab.issues[issueName].overdue += 1;
   });
 
   const assigneeList = Object.values(assigneeMap).map((a) => ({
@@ -1380,65 +1381,9 @@ function buildAssigneeTaskBoard(tasks, records, customIssues) {
   return assigneeList;
 }
 
-function getAllIssues(customIssues, caseName, records) {
-  const builtIn = appConfig.fields.find((f) => f.key === 'issue')?.options || [];
-  const custom = customIssues[caseName] || [];
-  const fromRecords = [...new Set(records.filter((r) => r.caseName === caseName).map((r) => r.issue).filter(Boolean))];
-  const merged = [...builtIn];
-  custom.forEach((item) => {
-    if (!merged.includes(item)) merged.push(item);
-  });
-  fromRecords.forEach((item) => {
-    if (!merged.includes(item)) merged.push(item);
-  });
-  return merged;
-}
 
-function computeIssueCoverage(customIssues, caseName, records) {
-  const issues = getAllIssues(customIssues, caseName, records);
-  const caseRecords = records.filter((r) => r.caseName === caseName);
 
-  const result = issues.map((issue) => {
-    const issueRecords = caseRecords.filter((r) => r.issue === issue);
-    const total = issueRecords.length;
-    const pending = issueRecords.filter((r) => r.status === '待核对').length;
-    const verified = issueRecords.filter((r) => r.status === '已核对').length;
-    const needStrengthen = issueRecords.filter((r) => r.status === '需补强').length;
 
-    let coverageStatus;
-    if (total === 0) {
-      coverageStatus = 'none';
-    } else if (needStrengthen > 0) {
-      coverageStatus = 'need-strengthen';
-    } else if (total === pending) {
-      coverageStatus = 'all-pending';
-    } else if (verified > 0) {
-      coverageStatus = 'covered';
-    } else {
-      coverageStatus = 'partial';
-    }
-
-    return {
-      name: issue,
-      total,
-      pending,
-      verified,
-      needStrengthen,
-      records: issueRecords,
-      coverageStatus,
-    };
-  });
-
-  return result;
-}
-
-const COVERAGE_STATUS_META = {
-  'none': { label: '无证据', color: '#dc2626', bg: '#fef2f2', border: '#fecaca', icon: 'alert-circle' },
-  'all-pending': { label: '待核对', color: '#d97706', bg: '#fffbeb', border: '#fde68a', icon: 'clock' },
-  'need-strengthen': { label: '需补强', color: '#b45309', bg: '#fff7ed', border: '#fed7aa', icon: 'alert-triangle' },
-  'covered': { label: '已覆盖', color: '#047857', bg: '#ecfdf3', border: '#a7f3d0', icon: 'check-circle' },
-  'partial': { label: '部分覆盖', color: '#2563eb', bg: '#eff6ff', border: '#bfdbfe', icon: 'info' },
-};
 
 function getAllTemplates(templateData) {
   const { custom = {}, favorites = {}, recent = {} } = templateData || {};
@@ -1532,19 +1477,7 @@ function statusClass(status) {
   return ['status-a', 'status-b', 'status-c', 'status-d'][index] || 'status-a';
 }
 
-const FIELD_ALIASES = {
-  caseName: ['案件', '案件名称', '案件名', '案例名称', '案例', 'case', 'caseName', 'case_name'],
-  evidence: ['证据材料', '证据', '证据名称', '材料名称', '材料', 'evidence', 'material'],
-  source: ['来源', '证据来源', '材料来源', '获取来源', 'source', 'from'],
-  date: ['取得日期', '日期', '获取日期', '取得时间', '采集日期', 'date', 'acquireDate'],
-  purpose: ['证明目的', '证明内容', '证明事项', '说明', 'purpose', 'prove'],
-  issue: ['关联争议点', '争议点', '焦点', '关联焦点', '争议焦点', 'issue', 'dispute'],
-  level: ['保密等级', '密级', '保密级别', '等级', 'level', 'secrecy', 'classification'],
-  status: ['当前状态', '状态', '核对状态', 'status', 'state']
-};
 
-const REQUIRED_FIELDS = ['caseName', 'evidence'];
-const ALL_FIELDS = ['caseName', 'evidence', 'source', 'date', 'purpose', 'issue', 'level', 'status'];
 
 const SCHEMA_VERSIONS = {
   0: { label: 'v0（无版本标记）', description: '旧版数据，数组格式，无schema版本字段', fields: ALL_FIELDS },
@@ -2050,151 +1983,7 @@ function applyWorkPackageMerge(workPackageData, resolutions, localRecords, local
   };
 }
 
-function parseCSV(text) {
-  const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(line => line.trim());
-  if (lines.length === 0) return { headers: [], rows: [] };
 
-  const parseLine = (line) => {
-    const result = [];
-    let current = '';
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const char = line[i];
-      if (char === '"') {
-        if (inQuotes && line[i + 1] === '"') {
-          current += '"';
-          i++;
-        } else {
-          inQuotes = !inQuotes;
-        }
-      } else if (char === ',' && !inQuotes) {
-        result.push(current.trim());
-        current = '';
-      } else {
-        current += char;
-      }
-    }
-    result.push(current.trim());
-    return result;
-  };
-
-  const headers = parseLine(lines[0]);
-  const rows = lines.slice(1).map(parseLine);
-  return { headers, rows };
-}
-
-function matchField(header) {
-  const normalized = header.trim().toLowerCase().replace(/\s+/g, '');
-  for (const [fieldKey, aliases] of Object.entries(FIELD_ALIASES)) {
-    for (const alias of aliases) {
-      if (normalized === alias.toLowerCase().replace(/\s+/g, '')) {
-        return fieldKey;
-      }
-    }
-  }
-  return null;
-}
-
-function buildImportPreview(text, customFieldMapping = {}) {
-  if (!text.trim()) {
-    return {
-      hasData: false,
-      matchedFields: [],
-      unmatchedHeaders: [],
-      missingRequired: REQUIRED_FIELDS.map(key => ({
-        key,
-        label: appConfig.fields.find(f => f.key === key)?.label || (key === 'status' ? '当前状态' : key)
-      })),
-      validRows: [],
-      invalidRows: [],
-      rowCount: 0,
-      fieldMapping: {},
-      headers: [],
-      rawRows: []
-    };
-  }
-
-  const { headers, rows } = parseCSV(text);
-  const fieldMapping = {};
-  const matchedFields = [];
-  const unmatchedHeaders = [];
-
-  headers.forEach((header, index) => {
-    let fieldKey = null;
-    if (customFieldMapping[index] !== undefined && customFieldMapping[index] !== null) {
-      fieldKey = customFieldMapping[index];
-    } else {
-      fieldKey = matchField(header);
-    }
-    if (fieldKey) {
-      fieldMapping[fieldKey] = index;
-      if (!matchedFields.includes(fieldKey)) {
-        matchedFields.push(fieldKey);
-      }
-    } else if (header.trim()) {
-      unmatchedHeaders.push(header);
-    }
-  });
-
-  const missingRequired = REQUIRED_FIELDS
-    .filter(key => !matchedFields.includes(key))
-    .map(key => ({
-      key,
-      label: appConfig.fields.find(f => f.key === key)?.label || (key === 'status' ? '当前状态' : key)
-    }));
-
-  const validRows = [];
-  const invalidRows = [];
-
-  rows.forEach((row, rowIndex) => {
-    const record = {};
-    let hasRequired = true;
-    const missingFields = [];
-
-    ALL_FIELDS.forEach(fieldKey => {
-      const colIndex = fieldMapping[fieldKey];
-      if (colIndex !== undefined && colIndex < row.length) {
-        record[fieldKey] = row[colIndex];
-      }
-    });
-
-    REQUIRED_FIELDS.forEach(key => {
-      if (!record[key] || !String(record[key]).trim()) {
-        hasRequired = false;
-        missingFields.push(appConfig.fields.find(f => f.key === key)?.label || key);
-      }
-    });
-
-    const enrichedRecord = {
-      ...record,
-      status: record.status || appConfig.primaryStatus,
-      _rowNumber: rowIndex + 2,
-      _missingFields: missingFields
-    };
-
-    if (hasRequired) {
-      validRows.push(enrichedRecord);
-    } else {
-      invalidRows.push(enrichedRecord);
-    }
-  });
-
-  return {
-    hasData: true,
-    matchedFields: matchedFields.map(key => ({
-      key,
-      label: appConfig.fields.find(f => f.key === key)?.label || (key === 'status' ? '当前状态' : key)
-    })),
-    unmatchedHeaders,
-    missingRequired,
-    validRows,
-    invalidRows,
-    rowCount: rows.length,
-    fieldMapping,
-    headers,
-    rawRows: rows
-  };
-}
 
 function App() {
   const [records, setRecords] = useState(loadRecords);
@@ -2520,7 +2309,7 @@ function App() {
 
   function handleImportTextChange(value) {
     setImportText(value);
-    setImportResult(buildImportPreview(value, customFieldMapping));
+    setImportResult(buildImportPreview(value, appConfig.fields, appConfig.primaryStatus, customFieldMapping));
   }
 
   function handleFieldMappingChange(colIndex, fieldKey) {
@@ -2536,12 +2325,12 @@ function App() {
       newMapping[colIndex] = fieldKey;
     }
     setCustomFieldMapping(newMapping);
-    setImportResult(buildImportPreview(importText, newMapping));
+    setImportResult(buildImportPreview(importText, appConfig.fields, appConfig.primaryStatus, newMapping));
   }
 
   function resetFieldMapping() {
     setCustomFieldMapping({});
-    setImportResult(buildImportPreview(importText, {}));
+    setImportResult(buildImportPreview(importText, appConfig.fields, appConfig.primaryStatus, {}));
   }
 
   function openImport() {
@@ -2742,7 +2531,8 @@ function App() {
 
   const issueCoverageData = useMemo(() => {
     if (!selectedCaseName) return null;
-    return computeIssueCoverage(customIssues, selectedCaseName, records);
+    const builtInIssues = appConfig.fields.find((f) => f.key === 'issue')?.options || [];
+    return computeIssueCoverage(customIssues, selectedCaseName, records, builtInIssues);
   }, [records, selectedCaseName, customIssues]);
 
   const filteredIssueCoverage = useMemo(() => {
@@ -2951,14 +2741,14 @@ function App() {
       if (taskFilters.issue && task.issue !== taskFilters.issue) return false;
       if (taskFilters.status !== 'all' && task.status !== taskFilters.status) return false;
       if (taskFilters.overdueStatus !== 'all') {
-        const overdue = isTaskOverdue(task);
+        const overdue = isTaskOverdue(task, today);
         if (taskFilters.overdueStatus === 'overdue' && !overdue) return false;
         if (taskFilters.overdueStatus === 'not-overdue' && overdue) return false;
       }
       return true;
     }).sort((a, b) => {
-      const aOverdue = isTaskOverdue(a) ? 0 : 1;
-      const bOverdue = isTaskOverdue(b) ? 0 : 1;
+      const aOverdue = isTaskOverdue(a, today) ? 0 : 1;
+      const bOverdue = isTaskOverdue(b, today) ? 0 : 1;
       if (aOverdue !== bOverdue) return aOverdue - bOverdue;
       if (a.deadline && b.deadline) {
         return a.deadline.localeCompare(b.deadline);
@@ -2979,13 +2769,13 @@ function App() {
     const pending = tasks.filter((t) => t.status === '待处理').length;
     const inProgress = tasks.filter((t) => t.status === '处理中').length;
     const completed = tasks.filter((t) => t.status === '已完成').length;
-    const overdue = tasks.filter((t) => isTaskOverdue(t)).length;
+    const overdue = tasks.filter((t) => isTaskOverdue(t, today)).length;
     return { total, pending, inProgress, completed, overdue };
   }, [tasks]);
 
   const filteredBoardTasks = useMemo(() => {
     if (!boardFilterOverdue) return tasks;
-    return tasks.filter((t) => isTaskOverdue(t));
+    return tasks.filter((t) => isTaskOverdue(t, today));
   }, [tasks, boardFilterOverdue]);
 
   const filteredCaseBoard = useMemo(() => buildCaseTaskBoard(filteredBoardTasks, records, customIssues), [filteredBoardTasks, records, customIssues]);
@@ -3019,7 +2809,8 @@ function App() {
 
   const wbCoverage = useMemo(() => {
     if (!workbenchCase) return null;
-    return computeIssueCoverage(customIssues, workbenchCase, records);
+    const builtInIssues = appConfig.fields.find((f) => f.key === 'issue')?.options || [];
+    return computeIssueCoverage(customIssues, workbenchCase, records, builtInIssues);
   }, [records, workbenchCase, customIssues]);
 
   const wbTimeline = useMemo(() => {
@@ -3233,7 +3024,7 @@ function App() {
       needStrengthen: caseRecords.filter((r) => r.status === '需补强').length,
       issues: new Set(caseRecords.map((r) => r.issue).filter(Boolean)).size,
       tasks: wbTasks.length,
-      tasksOverdue: wbTasks.filter((t) => isTaskOverdue(t)).length,
+      tasksOverdue: wbTasks.filter((t) => isTaskOverdue(t, today)).length,
     };
   }, [records, workbenchCase, wbTasks]);
 
@@ -4198,7 +3989,7 @@ function App() {
                               <span>{field.label}</span>
                               <select value={form[field.key] || ''} onChange={(e) => setForm({ ...form, [field.key]: e.target.value, caseName: workbenchCase })}>
                                 <option value="">请选择</option>
-                                {(field.key === 'issue' ? getAllIssues(customIssues, workbenchCase, records) : field.options).map((opt) => <option key={opt}>{opt}</option>)}
+                                {(field.key === 'issue' ? getAllIssues(customIssues, workbenchCase, records, appConfig.fields.find((f) => f.key === 'issue')?.options || []) : field.options).map((opt) => <option key={opt}>{opt}</option>)}
                               </select>
                             </label>
                           ) : (
@@ -4621,8 +4412,8 @@ function App() {
                   {wbTasks.length > 0 ? (
                     <div className="wb-tasks-list">
                       {wbTasks.map((task) => {
-                        const overdue = isTaskOverdue(task);
-                        const daysLeft = getTaskDaysLeft(task);
+                        const overdue = isTaskOverdue(task, today);
+                        const daysLeft = getTaskDaysLeft(task, today);
                         const statusMeta = TASK_STATUS_META[task.status];
                         const taskType = getTaskType(task);
                         const hasContext = task.sourceContext || task.caseName || task.evidenceId;
@@ -5526,7 +5317,7 @@ function App() {
                   ) : field.type === 'select' ? (
                     <select value={form[field.key] || ''} onChange={(event) => setForm({ ...form, [field.key]: event.target.value })}>
                       {(field.key === 'issue' && form.caseName
-                        ? getAllIssues(customIssues, form.caseName, records)
+                        ? getAllIssues(customIssues, form.caseName, records, appConfig.fields.find((f) => f.key === 'issue')?.options || [])
                         : field.options
                       ).map((option) => <option key={option}>{option}</option>)}
                     </select>
@@ -5956,7 +5747,8 @@ function App() {
                             <div className="kanban-issue-grid">
                               {caseBoard.issues.map((issueBoard) => {
                                 const issueExpanded = boardExpandedIssues[`${caseBoard.caseName}||${issueBoard.name}`] !== false;
-                                const coverage = computeIssueCoverage(customIssues, caseBoard.caseName, records).find((i) => i.name === issueBoard.name);
+                                const builtInIssues = appConfig.fields.find((f) => f.key === 'issue')?.options || [];
+                                const coverage = computeIssueCoverage(customIssues, caseBoard.caseName, records, builtInIssues).find((i) => i.name === issueBoard.name);
                                 const covMeta = coverage ? COVERAGE_STATUS_META[coverage.coverageStatus] : null;
                                 return (
                                   <div key={issueBoard.name} className="kanban-issue-card" style={covMeta ? { borderColor: covMeta.border, background: covMeta.bg } : {}}>
@@ -5976,8 +5768,8 @@ function App() {
                                     {issueExpanded && (
                                       <div className="kanban-issue-tasks">
                                         {issueBoard.tasks.map((task) => {
-                                          const overdue = isTaskOverdue(task);
-                                          const daysLeft = getTaskDaysLeft(task);
+                                          const overdue = isTaskOverdue(task, today);
+                                          const daysLeft = getTaskDaysLeft(task, today);
                                           const statusMeta = TASK_STATUS_META[task.status];
                                           const taskType = getTaskType(task);
                                           return (
@@ -6115,8 +5907,8 @@ function App() {
                                       {caseExpanded && (
                                         <div className="kanban-case-mini-tasks">
                                           {caseItem.tasks.map((task) => {
-                                            const overdue = isTaskOverdue(task);
-                                            const daysLeft = getTaskDaysLeft(task);
+                                            const overdue = isTaskOverdue(task, today);
+                                            const daysLeft = getTaskDaysLeft(task, today);
                                             const statusMeta = TASK_STATUS_META[task.status];
                                             const taskType = getTaskType(task);
                                             return (
@@ -6246,8 +6038,8 @@ function App() {
                                         {caseExpanded && (
                                           <div className="kanban-case-mini-tasks">
                                             {caseTasks.map((task) => {
-                                              const overdue = isTaskOverdue(task);
-                                              const daysLeft = getTaskDaysLeft(task);
+                                              const overdue = isTaskOverdue(task, today);
+                                              const daysLeft = getTaskDaysLeft(task, today);
                                               const statusMeta = TASK_STATUS_META[task.status];
                                               const taskType = getTaskType(task);
                                               return (
@@ -6388,8 +6180,8 @@ function App() {
             <div className="task-list">
               {filteredTasks.length > 0 ? (
                 filteredTasks.map((task) => {
-                  const overdue = isTaskOverdue(task);
-                  const daysLeft = getTaskDaysLeft(task);
+                  const overdue = isTaskOverdue(task, today);
+                  const daysLeft = getTaskDaysLeft(task, today);
                   const statusMeta = TASK_STATUS_META[task.status];
                   const taskType = getTaskType(task);
                   const hasContext = task.sourceContext || task.caseName || task.evidenceId;
@@ -6620,8 +6412,8 @@ function App() {
                   {tasksForSelectedEvidence.length > 0 ? (
                     <div className="evidence-tasks-list">
                       {tasksForSelectedEvidence.map((task) => {
-                        const overdue = isTaskOverdue(task);
-                        const daysLeft = getTaskDaysLeft(task);
+                        const overdue = isTaskOverdue(task, today);
+                        const daysLeft = getTaskDaysLeft(task, today);
                         const statusMeta = TASK_STATUS_META[task.status];
                         return (
                           <div
@@ -6875,7 +6667,7 @@ function App() {
                     onChange={(e) => handleFactNodeFormChange('issue', e.target.value)}
                   >
                     <option value="">请选择争议点</option>
-                    {getAllIssues(customIssues, selectedCaseName || workbenchCase, records).map((option) => (
+                    {getAllIssues(customIssues, selectedCaseName || workbenchCase, records, appConfig.fields.find((f) => f.key === 'issue')?.options || []).map((option) => (
                       <option key={option} value={option}>{option}</option>
                     ))}
                   </select>
