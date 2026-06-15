@@ -34,7 +34,7 @@ function computeIssueCoverage(customIssues, caseName, records, builtInIssues = [
       coverageStatus = 'need-strengthen';
     } else if (total === pending) {
       coverageStatus = 'all-pending';
-    } else if (total === verified) {
+    } else if (verified > 0) {
       coverageStatus = 'covered';
     } else {
       coverageStatus = 'partial';

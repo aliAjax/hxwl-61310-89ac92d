@@ -142,13 +142,13 @@ describe('争议点覆盖状态计算', () => {
       expect(result[0].verified).toBe(2);
     });
 
-    it('对于部分已核对但不是全部的争议点应该标记为partial', () => {
+    it('只要有已核对的证据就应该标记为covered（既有口径）', () => {
       const records = [
         { caseName: '合同纠纷案', issue: '付款事实', status: '已核对' },
         { caseName: '合同纠纷案', issue: '付款事实', status: '待核对' },
       ];
       const result = computeIssueCoverage({}, '合同纠纷案', records, ['付款事实']);
-      expect(result[0].coverageStatus).toBe('partial');
+      expect(result[0].coverageStatus).toBe('covered');
     });
 
     it('应该正确统计各状态的数量', () => {
@@ -208,7 +208,7 @@ describe('争议点覆盖状态计算', () => {
       expect(result.find(i => i.name === '争议点A').coverageStatus).toBe('covered');
       expect(result.find(i => i.name === '争议点B').coverageStatus).toBe('all-pending');
       expect(result.find(i => i.name === '争议点C').coverageStatus).toBe('need-strengthen');
-      expect(result.find(i => i.name === '争议点D').coverageStatus).toBe('partial');
+      expect(result.find(i => i.name === '争议点D').coverageStatus).toBe('covered');
       expect(result.find(i => i.name === '争议点E').coverageStatus).toBe('covered');
       expect(result.find(i => i.name === '争议点F').coverageStatus).toBe('none');
     });
@@ -224,6 +224,156 @@ describe('争议点覆盖状态计算', () => {
       expect(result[0].verified).toBe(0);
       expect(result[0].needStrengthen).toBe(0);
       expect(result[0].coverageStatus).toBe('partial');
+    });
+  });
+
+  describe('既有口径回归测试', () => {
+    describe('covered状态判定：只要有已核对即覆盖（verified > 0）', () => {
+      it('[回归] 1条已核对 + 99条待核对 → covered', () => {
+        const records = [];
+        records.push({ caseName: '合同纠纷案', issue: '付款事实', status: '已核对' });
+        for (let i = 0; i < 99; i++) {
+          records.push({ caseName: '合同纠纷案', issue: '付款事实', status: '待核对' });
+        }
+        const result = computeIssueCoverage({}, '合同纠纷案', records, ['付款事实']);
+        expect(result[0].total).toBe(100);
+        expect(result[0].verified).toBe(1);
+        expect(result[0].pending).toBe(99);
+        expect(result[0].coverageStatus).toBe('covered');
+      });
+
+      it('[回归] 99条已核对 + 1条待核对 → covered', () => {
+        const records = [];
+        for (let i = 0; i < 99; i++) {
+          records.push({ caseName: '合同纠纷案', issue: '付款事实', status: '已核对' });
+        }
+        records.push({ caseName: '合同纠纷案', issue: '付款事实', status: '待核对' });
+        const result = computeIssueCoverage({}, '合同纠纷案', records, ['付款事实']);
+        expect(result[0].total).toBe(100);
+        expect(result[0].verified).toBe(99);
+        expect(result[0].pending).toBe(1);
+        expect(result[0].coverageStatus).toBe('covered');
+      });
+
+      it('[回归] 只有1条已核对 → covered', () => {
+        const records = [
+          { caseName: '合同纠纷案', issue: '付款事实', status: '已核对' },
+        ];
+        const result = computeIssueCoverage({}, '合同纠纷案', records, ['付款事实']);
+        expect(result[0].total).toBe(1);
+        expect(result[0].verified).toBe(1);
+        expect(result[0].coverageStatus).toBe('covered');
+      });
+
+      it('[回归] 1条已核对 + N条未知状态 → covered', () => {
+        const records = [
+          { caseName: '合同纠纷案', issue: '付款事实', status: '已核对' },
+          { caseName: '合同纠纷案', issue: '付款事实', status: '未知状态X' },
+          { caseName: '合同纠纷案', issue: '付款事实', status: '未定义状态Y' },
+        ];
+        const result = computeIssueCoverage({}, '合同纠纷案', records, ['付款事实']);
+        expect(result[0].coverageStatus).toBe('covered');
+      });
+
+      it('[回归] 已核对 + 待核对 + 未知状态混合 → covered', () => {
+        const records = [
+          { caseName: '合同纠纷案', issue: '合同成立', status: '已核对' },
+          { caseName: '合同纠纷案', issue: '合同成立', status: '待核对' },
+          { caseName: '合同纠纷案', issue: '合同成立', status: '自定义状态' },
+        ];
+        const result = computeIssueCoverage({}, '合同纠纷案', records, ['合同成立']);
+        expect(result[0].coverageStatus).toBe('covered');
+      });
+    });
+
+    describe('need-strengthen优先级高于covered', () => {
+      it('[回归] 有已核对 + 有需补强 → need-strengthen（而非covered）', () => {
+        const records = [
+          { caseName: '合同纠纷案', issue: '付款事实', status: '已核对' },
+          { caseName: '合同纠纷案', issue: '付款事实', status: '已核对' },
+          { caseName: '合同纠纷案', issue: '付款事实', status: '需补强' },
+        ];
+        const result = computeIssueCoverage({}, '合同纠纷案', records, ['付款事实']);
+        expect(result[0].verified).toBe(2);
+        expect(result[0].needStrengthen).toBe(1);
+        expect(result[0].coverageStatus).toBe('need-strengthen');
+      });
+
+      it('[回归] 1条需补强 + 100条已核对 → need-strengthen', () => {
+        const records = [];
+        for (let i = 0; i < 100; i++) {
+          records.push({ caseName: '合同纠纷案', issue: '付款事实', status: '已核对' });
+        }
+        records.push({ caseName: '合同纠纷案', issue: '付款事实', status: '需补强' });
+        const result = computeIssueCoverage({}, '合同纠纷案', records, ['付款事实']);
+        expect(result[0].needStrengthen).toBe(1);
+        expect(result[0].coverageStatus).toBe('need-strengthen');
+      });
+    });
+
+    describe('all-pending判定：全部待核对', () => {
+      it('[回归] 只有1条待核对 → all-pending', () => {
+        const records = [
+          { caseName: '合同纠纷案', issue: '付款事实', status: '待核对' },
+        ];
+        const result = computeIssueCoverage({}, '合同纠纷案', records, ['付款事实']);
+        expect(result[0].total).toBe(1);
+        expect(result[0].pending).toBe(1);
+        expect(result[0].coverageStatus).toBe('all-pending');
+      });
+
+      it('[回归] 50条待核对 → all-pending', () => {
+        const records = [];
+        for (let i = 0; i < 50; i++) {
+          records.push({ caseName: '合同纠纷案', issue: '付款事实', status: '待核对' });
+        }
+        const result = computeIssueCoverage({}, '合同纠纷案', records, ['付款事实']);
+        expect(result[0].total).toBe(50);
+        expect(result[0].pending).toBe(50);
+        expect(result[0].coverageStatus).toBe('all-pending');
+      });
+    });
+
+    describe('状态优先级总体验证', () => {
+      it('[回归] 优先级总览：none < all-pending < covered < need-strengthen', () => {
+        const records = [
+          { caseName: '合同纠纷案', issue: '争议A', status: '待核对', id: 'a1' },
+          { caseName: '合同纠纷案', issue: '争议B', status: '已核对', id: 'b1' },
+          { caseName: '合同纠纷案', issue: '争议B', status: '待核对', id: 'b2' },
+          { caseName: '合同纠纷案', issue: '争议C', status: '已核对', id: 'c1' },
+          { caseName: '合同纠纷案', issue: '争议C', status: '需补强', id: 'c2' },
+        ];
+        const issues = ['争议A', '争议B', '争议C', '争议D'];
+        const result = computeIssueCoverage({}, '合同纠纷案', records, issues);
+
+        expect(result.find(i => i.name === '争议D').coverageStatus).toBe('none');
+        expect(result.find(i => i.name === '争议A').coverageStatus).toBe('all-pending');
+        expect(result.find(i => i.name === '争议B').coverageStatus).toBe('covered');
+        expect(result.find(i => i.name === '争议C').coverageStatus).toBe('need-strengthen');
+      });
+    });
+
+    describe('真实业务场景回归', () => {
+      it('[回归] 与appConfig.seed数据一致的场景应输出正确状态', () => {
+        const seedRecords = [
+          { caseName: '合同纠纷案', evidence: '付款截图', source: '委托人提供', date: '2026-06-02', purpose: '证明被告已收到预付款', issue: '付款事实', level: '内部', status: '已核对' },
+          { caseName: '合同纠纷案', evidence: '聊天记录', source: '微信导出', date: '2026-06-06', purpose: '证明交付期限变更', issue: '合同成立', level: '机密', status: '待核对' },
+          { caseName: '设备买卖案', evidence: '维修报告', source: '第三方机构', date: '2026-05-28', purpose: '证明设备存在瑕疵', issue: '交付瑕疵', level: '内部', status: '需补强' },
+        ];
+        const builtIn = ['合同成立', '付款事实', '交付瑕疵', '违约损失'];
+
+        const case1 = computeIssueCoverage({}, '合同纠纷案', seedRecords, builtIn);
+        expect(case1.find(i => i.name === '合同成立').coverageStatus).toBe('all-pending');
+        expect(case1.find(i => i.name === '付款事实').coverageStatus).toBe('covered');
+        expect(case1.find(i => i.name === '交付瑕疵').coverageStatus).toBe('none');
+        expect(case1.find(i => i.name === '违约损失').coverageStatus).toBe('none');
+
+        const case2 = computeIssueCoverage({}, '设备买卖案', seedRecords, builtIn);
+        expect(case2.find(i => i.name === '交付瑕疵').coverageStatus).toBe('need-strengthen');
+        expect(case2.find(i => i.name === '合同成立').coverageStatus).toBe('none');
+        expect(case2.find(i => i.name === '付款事实').coverageStatus).toBe('none');
+        expect(case2.find(i => i.name === '违约损失').coverageStatus).toBe('none');
+      });
     });
   });
 });
