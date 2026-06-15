@@ -1485,7 +1485,6 @@ function detectWorkPackageConflicts(workPackageData, localRecords, localTemplate
     if (!localMatch) {
       taskAdditions.push({ type: 'add', item: wpTask });
     } else if (!recordsEqual(wpTask, localMatch)) {
-    } else {
       const fieldDiffs = {};
       const keys = new Set([...Object.keys(wpTask), ...Object.keys(localMatch)]);
       keys.forEach(k => {
