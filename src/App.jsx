@@ -89,7 +89,7 @@ import {
   detectWorkPackageConflicts,
   applyWorkPackageMerge,
   analyzeBackupImport,
-  prepareIncomingRecord,
+  applyBackupMerge,
   addCustomTemplate,
   removeCustomTemplate,
   toggleFavorite,
@@ -97,6 +97,10 @@ import {
   recordRecentUse,
   getAllTemplates,
   isBuiltInTemplate,
+  saveRecords,
+  finishRollback,
+  buildBackupPayload,
+  downloadBackup,
 } from './utils';
 
 function avg(numbers) {
@@ -359,7 +363,7 @@ function App() {
 
   function persist(next) {
     setRecords(next);
-    localStorage.setItem(appConfig.storage, JSON.stringify({ _schemaVersion: CURRENT_SCHEMA_VERSION, records: next }));
+    saveRecords(next);
   }
 
   function addRecord(event) {
@@ -1656,143 +1660,12 @@ function App() {
     event.target.value = '';
   }
 
-  function prepareIncomingRecord(r, strategy, by) {
-    return {
-      ...r,
-      id: r.id || uid(),
-      status: r.status || appConfig.primaryStatus,
-      timeline: r.timeline && Array.isArray(r.timeline) && r.timeline.length > 0
-        ? r.timeline
-        : [{ status: r.status || appConfig.primaryStatus, at: today, by }],
-      createdAt: r.createdAt || new Date().toISOString(),
-    };
-  }
-
   function confirmMergeImport() {
-    if (!backupImportAnalysis || !backupImportAnalysis.hasData || backupImportAnalysis.parseError) return;
-
-    const preview = backupImportAnalysis.strategyPreviews[mergeStrategy];
-    if (!preview) return;
-
-    const currentIdMap = new Map(records.map((r) => [r.id, r]));
-    const currentCaseEvidenceMap = new Map(records.map((r) => [`${r.caseName}||${r.evidence}`, r]));
-    const newIdSet = new Set(records.map((r) => r.id));
-
-    const finalRecords = [...records];
-    const overwrittenIds = new Set();
-    let addCount = 0;
-    let overwriteCount = 0;
-
-    const by = mergeStrategy === 'addOnly' ? '备份导入（仅新增）'
-      : mergeStrategy === 'overwriteById' ? '备份导入（按ID覆盖）'
-      : '备份导入（按案件+证据合并）';
-
-    backupImportAnalysis.backupRecords.forEach((r) => {
-      if (mergeStrategy === 'addOnly') {
-        const hasIdConflict = r.id && currentIdMap.has(r.id);
-        const hasContentConflict = currentCaseEvidenceMap.has(`${r.caseName}||${r.evidence}`);
-        if (hasIdConflict || hasContentConflict) {
-          return;
-        }
-        let id = r.id;
-        if (!id || newIdSet.has(id)) {
-          id = uid();
-        }
-        newIdSet.add(id);
-        finalRecords.push(prepareIncomingRecord({ ...r, id }, mergeStrategy, by));
-        addCount++;
-      } else if (mergeStrategy === 'overwriteById') {
-        if (r.id && currentIdMap.has(r.id) && !overwrittenIds.has(r.id)) {
-          const idx = finalRecords.findIndex((rec) => rec.id === r.id);
-          if (idx !== -1) {
-            const existing = finalRecords[idx];
-            finalRecords[idx] = prepareIncomingRecord({
-              ...r,
-              id: r.id,
-              createdAt: existing.createdAt,
-            }, mergeStrategy, by);
-            overwrittenIds.add(r.id);
-            overwriteCount++;
-          }
-        } else {
-          let id = r.id;
-          if (!id || newIdSet.has(id)) {
-            id = uid();
-          }
-          newIdSet.add(id);
-          finalRecords.push(prepareIncomingRecord({ ...r, id }, mergeStrategy, by));
-          addCount++;
-        }
-      } else if (mergeStrategy === 'mergeByCaseEvidence') {
-        const key = `${r.caseName}||${r.evidence}`;
-        let matched = false;
-        if (currentCaseEvidenceMap.has(key)) {
-          const existing = currentCaseEvidenceMap.get(key);
-          if (!overwrittenIds.has(existing.id)) {
-            const idx = finalRecords.findIndex((rec) => rec.id === existing.id);
-            if (idx !== -1) {
-              finalRecords[idx] = prepareIncomingRecord({
-                ...r,
-                id: existing.id,
-                createdAt: existing.createdAt,
-              }, mergeStrategy, by);
-              overwrittenIds.add(existing.id);
-              overwriteCount++;
-              matched = true;
-            }
-          }
-        }
-        if (!matched && r.id && currentIdMap.has(r.id) && !overwrittenIds.has(r.id)) {
-          const idx = finalRecords.findIndex((rec) => rec.id === r.id);
-          if (idx !== -1) {
-            const existing = finalRecords[idx];
-            finalRecords[idx] = prepareIncomingRecord({
-              ...r,
-              id: r.id,
-              createdAt: existing.createdAt,
-            }, mergeStrategy, by);
-            overwrittenIds.add(r.id);
-            overwriteCount++;
-            matched = true;
-          }
-        }
-        if (!matched) {
-          let id = r.id;
-          if (!id || newIdSet.has(id)) {
-            id = uid();
-          }
-          newIdSet.add(id);
-          finalRecords.push(prepareIncomingRecord({ ...r, id }, mergeStrategy, by));
-          addCount++;
-        }
-      }
-    });
-
-    const strategyDesc = mergeStrategy === 'addOnly' ? '仅新增'
-      : mergeStrategy === 'overwriteById' ? '按ID覆盖'
-      : '按案件+证据合并';
-
-    const snapshotResult = createSnapshot(records, CURRENT_SCHEMA_VERSION);
-    if (snapshotResult.success) {
-      addMigrationRecord({
-        fromVersion: CURRENT_SCHEMA_VERSION,
-        toVersion: CURRENT_SCHEMA_VERSION,
-        timestamp: new Date().toISOString(),
-        status: 'success',
-        description: `备份导入（${strategyDesc}）- 新增${addCount}条，覆盖${overwriteCount}条`,
-        snapshotKey: snapshotResult.snapshotKey,
-        recordCount: finalRecords.length,
-        importDetails: {
-          strategy: mergeStrategy,
-          addCount,
-          overwriteCount,
-          skipCount: backupImportAnalysis.backupRecords.length - addCount - overwriteCount,
-        },
-      });
+    const merged = applyBackupMerge(backupImportAnalysis, records, mergeStrategy);
+    if (merged) {
+      persist(merged);
+      closeDataMgmt();
     }
-
-    persist(ensureRecordIntegrity(finalRecords));
-    closeDataMgmt();
   }
 
   function confirmBackupImport() {
@@ -1806,22 +1679,9 @@ function App() {
   function handleRollback(snapshotKey) {
     const result = performRollback(snapshotKey);
     if (result.success) {
-      const migrated = ensureRecordIntegrity(result.records);
-      if (result.version < CURRENT_SCHEMA_VERSION) {
-        const migrationResult = runMigrations(migrated, result.version, CURRENT_SCHEMA_VERSION);
-        if (migrationResult.success) {
-          const versionedData = { _schemaVersion: CURRENT_SCHEMA_VERSION, records: migrationResult.records };
-          localStorage.setItem(appConfig.storage, JSON.stringify(versionedData));
-          setRecords(ensureRecordIntegrity(migrationResult.records));
-          setRollbackStatus({ success: true, message: `已从 v${result.version} 快照恢复并自动迁移到 v${CURRENT_SCHEMA_VERSION}` });
-        } else {
-          setRecords(migrated);
-          setRollbackStatus({ success: true, message: `已从 v${result.version} 快照恢复，但自动迁移未完全成功，当前数据为 v${result.version} 格式` });
-        }
-      } else {
-        setRecords(migrated);
-        setRollbackStatus({ success: true, message: '已成功恢复数据' });
-      }
+      const finish = finishRollback(result);
+      setRecords(finish.records);
+      setRollbackStatus({ success: true, message: finish.message });
     } else {
       setRollbackStatus({ success: false, message: result.error });
     }
@@ -1833,14 +1693,7 @@ function App() {
   }
 
   function handleExportBackup() {
-    const backupData = { _schemaVersion: CURRENT_SCHEMA_VERSION, exportDate: new Date().toISOString(), records };
-    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `证据数据备份_${today}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadBackup(records);
   }
 
   function openExport(initialConfig = {}) {

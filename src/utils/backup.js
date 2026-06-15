@@ -159,3 +159,131 @@ export function prepareIncomingRecord(r, strategy, by) {
     createdAt: r.createdAt || new Date().toISOString(),
   };
 }
+
+export function applyBackupMerge(backupAnalysis, currentRecords, mergeStrategy) {
+  if (!backupAnalysis || !backupAnalysis.hasData || backupAnalysis.parseError) {
+    return null;
+  }
+
+  const preview = backupAnalysis.strategyPreviews[mergeStrategy];
+  if (!preview) return null;
+
+  const currentIdMap = new Map(currentRecords.map((r) => [r.id, r]));
+  const currentCaseEvidenceMap = new Map(currentRecords.map((r) => [`${r.caseName}||${r.evidence}`, r]));
+  const newIdSet = new Set(currentRecords.map((r) => r.id));
+
+  const finalRecords = [...currentRecords];
+  const overwrittenIds = new Set();
+  let addCount = 0;
+  let overwriteCount = 0;
+
+  const by = mergeStrategy === 'addOnly' ? '备份导入（仅新增）'
+    : mergeStrategy === 'overwriteById' ? '备份导入（按ID覆盖）'
+    : '备份导入（按案件+证据合并）';
+
+  backupAnalysis.backupRecords.forEach((r) => {
+    if (mergeStrategy === 'addOnly') {
+      const hasIdConflict = r.id && currentIdMap.has(r.id);
+      const hasContentConflict = currentCaseEvidenceMap.has(`${r.caseName}||${r.evidence}`);
+      if (hasIdConflict || hasContentConflict) {
+        return;
+      }
+      let id = r.id;
+      if (!id || newIdSet.has(id)) {
+        id = uid();
+      }
+      newIdSet.add(id);
+      finalRecords.push(prepareIncomingRecord({ ...r, id }, mergeStrategy, by));
+      addCount++;
+    } else if (mergeStrategy === 'overwriteById') {
+      if (r.id && currentIdMap.has(r.id) && !overwrittenIds.has(r.id)) {
+        const idx = finalRecords.findIndex((rec) => rec.id === r.id);
+        if (idx !== -1) {
+          const existing = finalRecords[idx];
+          finalRecords[idx] = prepareIncomingRecord({
+            ...r,
+            id: r.id,
+            createdAt: existing.createdAt,
+          }, mergeStrategy, by);
+          overwrittenIds.add(r.id);
+          overwriteCount++;
+        }
+      } else {
+        let id = r.id;
+        if (!id || newIdSet.has(id)) {
+          id = uid();
+        }
+        newIdSet.add(id);
+        finalRecords.push(prepareIncomingRecord({ ...r, id }, mergeStrategy, by));
+        addCount++;
+      }
+    } else if (mergeStrategy === 'mergeByCaseEvidence') {
+      const key = `${r.caseName}||${r.evidence}`;
+      let matched = false;
+      if (currentCaseEvidenceMap.has(key)) {
+        const existing = currentCaseEvidenceMap.get(key);
+        if (!overwrittenIds.has(existing.id)) {
+          const idx = finalRecords.findIndex((rec) => rec.id === existing.id);
+          if (idx !== -1) {
+            finalRecords[idx] = prepareIncomingRecord({
+              ...r,
+              id: existing.id,
+              createdAt: existing.createdAt,
+            }, mergeStrategy, by);
+            overwrittenIds.add(existing.id);
+            overwriteCount++;
+            matched = true;
+          }
+        }
+      }
+      if (!matched && r.id && currentIdMap.has(r.id) && !overwrittenIds.has(r.id)) {
+        const idx = finalRecords.findIndex((rec) => rec.id === r.id);
+        if (idx !== -1) {
+          const existing = finalRecords[idx];
+          finalRecords[idx] = prepareIncomingRecord({
+            ...r,
+            id: r.id,
+            createdAt: existing.createdAt,
+          }, mergeStrategy, by);
+          overwrittenIds.add(r.id);
+          overwriteCount++;
+          matched = true;
+        }
+      }
+      if (!matched) {
+        let id = r.id;
+        if (!id || newIdSet.has(id)) {
+          id = uid();
+        }
+        newIdSet.add(id);
+        finalRecords.push(prepareIncomingRecord({ ...r, id }, mergeStrategy, by));
+        addCount++;
+      }
+    }
+  });
+
+  const strategyDesc = mergeStrategy === 'addOnly' ? '仅新增'
+    : mergeStrategy === 'overwriteById' ? '按ID覆盖'
+    : '按案件+证据合并';
+
+  const snapshotResult = createSnapshot(currentRecords, CURRENT_SCHEMA_VERSION);
+  if (snapshotResult.success) {
+    addMigrationRecord({
+      fromVersion: CURRENT_SCHEMA_VERSION,
+      toVersion: CURRENT_SCHEMA_VERSION,
+      timestamp: new Date().toISOString(),
+      status: 'success',
+      description: `备份导入（${strategyDesc}）- 新增${addCount}条，覆盖${overwriteCount}条`,
+      snapshotKey: snapshotResult.snapshotKey,
+      recordCount: finalRecords.length,
+      importDetails: {
+        strategy: mergeStrategy,
+        addCount,
+        overwriteCount,
+        skipCount: backupAnalysis.backupRecords.length - addCount - overwriteCount,
+      },
+    });
+  }
+
+  return ensureRecordIntegrity(finalRecords);
+}

@@ -669,3 +669,52 @@ export function saveCaseReview(caseName, reviewState) {
   all[caseName] = reviewState;
   saveReviewData(all);
 }
+
+export function saveRecords(records) {
+  localStorage.setItem(appConfig.storage, JSON.stringify({ _schemaVersion: CURRENT_SCHEMA_VERSION, records }));
+}
+
+export function finishRollback(rollbackResult) {
+  if (!rollbackResult.success) {
+    return rollbackResult;
+  }
+  const migrated = ensureRecordIntegrity(rollbackResult.records);
+  if (rollbackResult.version < CURRENT_SCHEMA_VERSION) {
+    const migrationResult = runMigrations(migrated, rollbackResult.version, CURRENT_SCHEMA_VERSION);
+    if (migrationResult.success) {
+      const versionedData = { _schemaVersion: CURRENT_SCHEMA_VERSION, records: migrationResult.records };
+      localStorage.setItem(appConfig.storage, JSON.stringify(versionedData));
+      return {
+        success: true,
+        records: ensureRecordIntegrity(migrationResult.records),
+        message: `已从 v${rollbackResult.version} 快照恢复并自动迁移到 v${CURRENT_SCHEMA_VERSION}`,
+      };
+    } else {
+      return {
+        success: true,
+        records: migrated,
+        message: `已从 v${rollbackResult.version} 快照恢复，但自动迁移未完全成功，当前数据为 v${rollbackResult.version} 格式`,
+      };
+    }
+  }
+  return {
+    success: true,
+    records: migrated,
+    message: '已成功恢复数据',
+  };
+}
+
+export function buildBackupPayload(records) {
+  return { _schemaVersion: CURRENT_SCHEMA_VERSION, exportDate: new Date().toISOString(), records };
+}
+
+export function downloadBackup(records) {
+  const backupData = buildBackupPayload(records);
+  const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `证据数据备份_${today}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
