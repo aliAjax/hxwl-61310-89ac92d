@@ -213,20 +213,6 @@ const MIGRATIONS = [
   },
 ];
 
-function detectSchemaVersion(raw) {
-  if (!raw) return -1;
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && typeof parsed._schemaVersion === 'number') {
-      return parsed._schemaVersion;
-    }
-    if (Array.isArray(parsed)) return 0;
-    return -1;
-  } catch {
-    return -1;
-  }
-}
-
 function createSnapshot(records, version) {
   const snapshotId = uid();
   const snapshotKey = SNAPSHOT_PREFIX + 'v' + version + '-' + snapshotId;
@@ -735,10 +721,6 @@ function getTaskDaysLeft(task) {
 
 function getTasksForEvidence(tasks, evidenceId) {
   return tasks.filter((task) => task.evidenceId === evidenceId);
-}
-
-function getTasksForIssue(tasks, caseName, issue) {
-  return tasks.filter((task) => task.caseName === caseName && task.issue === issue);
 }
 
 function getTaskType(task) {
@@ -1307,7 +1289,6 @@ function App() {
   const [boardExpandedIssueCases, setBoardExpandedIssueCases] = useState({});
   const [boardExpandedAssignees, setBoardExpandedAssignees] = useState({});
   const [boardExpandedAssigneeCases, setBoardExpandedAssigneeCases] = useState({});
-  const [boardExpandedAssigneeIssues, setBoardExpandedAssigneeIssues] = useState({});
   const [showDataMgmt, setShowDataMgmt] = useState(false);
   const [dataMgmtTab, setDataMgmtTab] = useState('version');
   const [backupImportText, setBackupImportText] = useState('');
@@ -1319,7 +1300,6 @@ function App() {
   const [boardGroupBy, setBoardGroupBy] = useState('case');
   const [boardFilterOverdue, setBoardFilterOverdue] = useState(false);
   const [taskContext, setTaskContext] = useState(null);
-  const [selectedTaskId, setSelectedTaskId] = useState(null);
   const [multiEvidenceIds, setMultiEvidenceIds] = useState([]);
 
   const DATA_MGMT_TABS = [
@@ -1884,14 +1864,6 @@ function App() {
     return [...issues];
   }, [tasks]);
 
-  const taskCaseOptions = useMemo(() => {
-    const cases = new Set();
-    tasks.forEach((task) => {
-      if (task.caseName) cases.add(task.caseName);
-    });
-    return [...cases];
-  }, [tasks]);
-
   const filteredTasks = useMemo(() => {
     return tasks.filter((task) => {
       if (taskFilters.caseName && task.caseName !== taskFilters.caseName) return false;
@@ -1930,10 +1902,6 @@ function App() {
     return { total, pending, inProgress, completed, overdue };
   }, [tasks]);
 
-  const caseTaskBoard = useMemo(() => buildCaseTaskBoard(tasks, records, customIssues), [tasks, records, customIssues]);
-  const issueTaskBoard = useMemo(() => buildIssueTaskBoard(tasks, records, customIssues), [tasks, records, customIssues]);
-  const assigneeTaskBoard = useMemo(() => buildAssigneeTaskBoard(tasks, records, customIssues), [tasks, records, customIssues]);
-
   const filteredBoardTasks = useMemo(() => {
     if (!boardFilterOverdue) return tasks;
     return tasks.filter((t) => isTaskOverdue(t));
@@ -1942,12 +1910,6 @@ function App() {
   const filteredCaseBoard = useMemo(() => buildCaseTaskBoard(filteredBoardTasks, records, customIssues), [filteredBoardTasks, records, customIssues]);
   const filteredIssueBoard = useMemo(() => buildIssueTaskBoard(filteredBoardTasks, records, customIssues), [filteredBoardTasks, records, customIssues]);
   const filteredAssigneeBoard = useMemo(() => buildAssigneeTaskBoard(filteredBoardTasks, records, customIssues), [filteredBoardTasks, records, customIssues]);
-
-  const allAssignees = useMemo(() => {
-    const assignees = new Set();
-    tasks.forEach((t) => { if (t.assignee) assignees.add(t.assignee); });
-    return [...assignees];
-  }, [tasks]);
 
   const wbRecords = useMemo(() => {
     if (!workbenchCase) return [];
@@ -2267,11 +2229,11 @@ function App() {
     const total = exportData.length;
     const cases = new Set(exportData.map((item) => item.caseName)).size;
     const issues = new Set(exportData.map((item) => item.issue)).size;
-    const currentLevelRank = LEVEL_RANK[exportConfig.exportLevel] ?? 0;
-    const confidentialCount = currentLevelRank >= LEVEL_RANK['机密']
+    const maskedCount = exportData.filter((item) => item._masked).length;
+    const confidentialCount = exportConfig.exportLevel === '机密'
       ? exportData.filter((item) => item.level === '机密').length
       : 0;
-    return { total, cases, issues, confidentialCount };
+    return { total, cases, issues, confidentialCount, maskedCount };
   }, [exportData, exportConfig.exportLevel]);
 
   function handlePrint() {
@@ -2807,7 +2769,7 @@ function App() {
                   <div className="wb-export-stats">
                     <div className="summary-stat"><div className="summary-icon info"><FileSpreadsheet size={16} /></div><div><span>证据数</span><strong>{wbExportData.length}</strong></div></div>
                     <div className="summary-stat"><div className="summary-icon ok"><Target size={16} /></div><div><span>争议点</span><strong>{new Set(wbExportData.map((i) => i.issue).filter(Boolean)).size}</strong></div></div>
-                    <div className="summary-stat warning"><div className="summary-icon warn"><Shield size={16} /></div><div><span>机密</span><strong>{LEVEL_RANK[exportConfig.exportLevel] >= LEVEL_RANK['机密'] ? wbExportData.filter((i) => i.level === '机密').length : 0}</strong></div></div>
+                    <div className="summary-stat warning"><div className="summary-icon warn"><Shield size={16} /></div><div><span>{exportConfig.exportLevel === '机密' ? '机密' : '脱敏'}</span><strong>{exportConfig.exportLevel === '机密' ? wbExportData.filter((i) => i.level === '机密').length : wbExportData.filter((i) => i._masked).length}</strong></div></div>
                   </div>
                   {wbExportData.length > 0 ? (
                     <div className="wb-directory-preview">
@@ -4882,15 +4844,15 @@ function App() {
                   <div className="summary-stat warning">
                     <div className="summary-icon warn"><Shield size={16} /></div>
                     <div>
-                      <span>机密材料</span>
-                      <strong>{exportStats.confidentialCount}</strong>
+                      <span>{exportConfig.exportLevel === '机密' ? '机密材料' : '脱敏材料'}</span>
+                      <strong>{exportConfig.exportLevel === '机密' ? exportStats.confidentialCount : exportStats.maskedCount}</strong>
                     </div>
                   </div>
                 </div>
-                {exportConfig.exportLevel !== '机密' && exportData.some((d) => d._masked) && (
+                {exportConfig.exportLevel !== '机密' && exportStats.maskedCount > 0 && (
                   <div className="export-mode-hint">
                     <Info size={14} />
-                    当前出卷模式为「{exportConfig.exportLevel}」，{exportData.filter((d) => d._masked).length} 条超出级别的材料已自动脱敏展示
+                    当前出卷模式为「{exportConfig.exportLevel}」，{exportStats.maskedCount} 条超出级别的材料已自动脱敏展示
                   </div>
                 )}
               </div>
@@ -5014,11 +4976,11 @@ function App() {
                     {exportConfig.exportLevel}
                   </strong>
                 </div>
-                {exportConfig.exportLevel !== '机密' && exportData.some((d) => d._masked) && (
+                {exportConfig.exportLevel !== '机密' && exportStats.maskedCount > 0 && (
                   <div className="print-meta-row print-meta-note">
                     <span>备注：</span>
                     <strong style={{ color: '#dc2626' }}>
-                      超出级别的 {exportData.filter((d) => d._masked).length} 条材料已脱敏
+                      超出级别的 {exportStats.maskedCount} 条材料已脱敏
                     </strong>
                   </div>
                 )}
