@@ -99,7 +99,6 @@ import {
   isBuiltInTemplate,
   saveRecords,
   finishRollback,
-  buildBackupPayload,
   downloadBackup,
 } from './utils';
 

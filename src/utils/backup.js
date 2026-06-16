@@ -1,5 +1,13 @@
 import { ALL_FIELDS } from './index';
-import { appConfig, uid, today } from './storage';
+import {
+  appConfig,
+  uid,
+  today,
+  CURRENT_SCHEMA_VERSION,
+  createSnapshot,
+  addMigrationRecord,
+  ensureRecordIntegrity,
+} from './storage';
 
 export function analyzeBackupImport(backupText, currentRecords) {
   if (!backupText || !backupText.trim()) {
