@@ -81,6 +81,7 @@ import {
   buildAssigneeTaskBoard,
   WORK_PACKAGE_VERSION,
   WORK_PACKAGE_TYPE,
+  WORK_PACKAGE_EXPORT_SECTIONS,
   buildWorkPackage,
   downloadWorkPackage,
   parseWorkPackage,
@@ -100,51 +101,23 @@ import {
   saveRecords,
   finishRollback,
   downloadBackup,
+  avg,
+  money,
+  inNextDays,
+  latestTemp,
+  hasHotTemp,
+  priorityRank,
+  hasOverlap,
+  statusClass,
+  computeCaseOverview,
+  computeReviewStats,
+  computeIssueCoverageStats,
+  buildTimelineData,
+  computeWorkbenchStats,
+  computeTaskMetrics,
 } from './utils';
 
-function avg(numbers) {
-  const valid = numbers.filter((value) => Number.isFinite(value));
-  if (!valid.length) return 0;
-  return valid.reduce((sum, value) => sum + value, 0) / valid.length;
-}
-
-function money(value) {
-  return new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 0 }).format(value || 0);
-}
-
-function inNextDays(dateText, days) {
-  if (!dateText) return false;
-  const date = new Date(dateText);
-  const now = new Date(today);
-  const diff = (date.getTime() - now.getTime()) / 86400000;
-  return diff >= 0 && diff <= days;
-}
-
-function latestTemp(item) {
-  const temps = item.temps || [Number(item.temperature)];
-  return temps[temps.length - 1];
-}
-
-function hasHotTemp(item) {
-  const temps = item.temps || [Number(item.temperature)];
-  return temps.some((value) => Number(value) > 2);
-}
-
-function priorityRank(value) {
-  return { 危急: 0, 加急: 1, 常规: 2, 高: 0, 中: 1, 低: 2 }[value] ?? 9;
-}
-
-function hasOverlap(target, records) {
-  if (!target.bed || !target.date || !target.start || !target.end) return false;
-  return records.some((item) => item.id !== target.id && item.bed === target.bed && item.date === target.date && target.start < item.end && target.end > item.start);
-}
-
-function statusClass(status) {
-  const index = appConfig.statuses.indexOf(status);
-  return ['status-a', 'status-b', 'status-c', 'status-d'][index] || 'status-a';
-}
-
-const WORK_PACKAGE_EXPORT_SECTIONS = [
+const WORK_PACKAGE_EXPORT_SECTIONS_WITH_ICONS = [
   { key: 'records', label: '证据材料', desc: '案件关联的证据记录和时间线', icon: FileSpreadsheet },
   { key: 'customIssues', label: '自定义争议点', desc: '该案件下用户自定义的争议点', icon: Target },
   { key: 'purposeTemplates', label: '证明目的模板', desc: '该案件争议点关联的自定义模板', icon: Bookmark },
@@ -261,20 +234,7 @@ function App() {
     }));
   }, [records, tasks, customIssues, workbenchCase, reviewCheckItems]);
 
-  const wbReviewStats = useMemo(() => {
-    if (!wbReviewChecklist || wbReviewChecklist.length === 0) return null;
-    const total = wbReviewChecklist.length;
-    const checked = wbReviewChecklist.filter((i) => i.checked).length;
-    const highItems = wbReviewChecklist.filter((i) => i.severity === 'high');
-    const highChecked = highItems.filter((i) => i.checked).length;
-    const byCategory = {};
-    Object.keys(REVIEW_ITEM_CATEGORIES).forEach((cat) => {
-      const catItems = wbReviewChecklist.filter((i) => i.category === cat);
-      byCategory[cat] = { total: catItems.length, checked: catItems.filter((i) => i.checked).length };
-    });
-    const unresolvedHighRisk = wbReviewChecklist.filter((i) => i.severity === 'high' && !i.checked);
-    return { total, checked, highTotal: highItems.length, highChecked, byCategory, unresolvedHighRisk, passable: total > 0 && checked === total };
-  }, [wbReviewChecklist]);
+  const wbReviewStats = useMemo(() => computeReviewStats(wbReviewChecklist), [wbReviewChecklist]);
 
   useEffect(() => {
     if (!workbenchCase) return;
@@ -610,44 +570,7 @@ function App() {
     return names;
   }, [records]);
 
-  const caseOverview = useMemo(() => {
-    if (!selectedCaseName) return null;
-
-    const caseRecords = records.filter((item) => item.caseName === selectedCaseName);
-
-    const statusDistribution = appConfig.statuses.map((status) => ({
-      name: status,
-      count: caseRecords.filter((item) => item.status === status).length,
-    }));
-
-    const issueDistribution = {};
-    caseRecords.forEach((item) => {
-      const key = item.issue || '未分类';
-      issueDistribution[key] = (issueDistribution[key] || 0) + 1;
-    });
-
-    const levelDistribution = {};
-    caseRecords.forEach((item) => {
-      const key = item.level || '未设置';
-      levelDistribution[key] = (levelDistribution[key] || 0) + 1;
-    });
-
-    const recentEvidence = [...caseRecords]
-      .sort((a, b) => {
-        const aDate = a.createdAt || a.date || '';
-        const bDate = b.createdAt || b.date || '';
-        return String(bDate).localeCompare(String(aDate));
-      })
-      .slice(0, 5);
-
-    return {
-      totalCount: caseRecords.length,
-      statusDistribution,
-      issueDistribution: Object.entries(issueDistribution).map(([name, count]) => ({ name, count })),
-      levelDistribution: Object.entries(levelDistribution).map(([name, count]) => ({ name, count })),
-      recentEvidence,
-    };
-  }, [records, selectedCaseName]);
+  const caseOverview = useMemo(() => computeCaseOverview(records, selectedCaseName, appConfig.statuses), [records, selectedCaseName]);
 
   const issueCoverageData = useMemo(() => {
     if (!selectedCaseName) return null;
@@ -661,17 +584,7 @@ function App() {
     return issueCoverageData.filter((item) => item.coverageStatus === issueCoverageFilter);
   }, [issueCoverageData, issueCoverageFilter]);
 
-  const issueCoverageStats = useMemo(() => {
-    if (!issueCoverageData) return null;
-    return {
-      total: issueCoverageData.length,
-      none: issueCoverageData.filter((i) => i.coverageStatus === 'none').length,
-      allPending: issueCoverageData.filter((i) => i.coverageStatus === 'all-pending').length,
-      needStrengthen: issueCoverageData.filter((i) => i.coverageStatus === 'need-strengthen').length,
-      covered: issueCoverageData.filter((i) => i.coverageStatus === 'covered').length,
-      partial: issueCoverageData.filter((i) => i.coverageStatus === 'partial').length,
-    };
-  }, [issueCoverageData]);
+  const issueCoverageStats = useMemo(() => computeIssueCoverageStats(issueCoverageData), [issueCoverageData]);
 
   function handleAddCustomIssue() {
     if (!selectedCaseName || !newIssueInput.trim()) return;
@@ -884,14 +797,7 @@ function App() {
     return getTasksForEvidence(tasks, selected.id);
   }, [tasks, selected]);
 
-  const taskMetrics = useMemo(() => {
-    const total = tasks.length;
-    const pending = tasks.filter((t) => t.status === '待处理').length;
-    const inProgress = tasks.filter((t) => t.status === '处理中').length;
-    const completed = tasks.filter((t) => t.status === '已完成').length;
-    const overdue = tasks.filter((t) => isTaskOverdue(t, today)).length;
-    return { total, pending, inProgress, completed, overdue };
-  }, [tasks]);
+  const taskMetrics = useMemo(() => computeTaskMetrics(tasks, isTaskOverdue, today), [tasks]);
 
   const filteredBoardTasks = useMemo(() => {
     if (!boardFilterOverdue) return tasks;
@@ -1134,19 +1040,7 @@ function App() {
     }, {});
   }, [wbExportData, workbenchCase]);
 
-  const wbStats = useMemo(() => {
-    if (!workbenchCase) return null;
-    const caseRecords = records.filter((item) => item.caseName === workbenchCase);
-    return {
-      total: caseRecords.length,
-      pending: caseRecords.filter((r) => r.status === '待核对').length,
-      verified: caseRecords.filter((r) => r.status === '已核对').length,
-      needStrengthen: caseRecords.filter((r) => r.status === '需补强').length,
-      issues: new Set(caseRecords.map((r) => r.issue).filter(Boolean)).size,
-      tasks: wbTasks.length,
-      tasksOverdue: wbTasks.filter((t) => isTaskOverdue(t, today)).length,
-    };
-  }, [records, workbenchCase, wbTasks]);
+  const wbStats = useMemo(() => computeWorkbenchStats(records, wbTasks, workbenchCase, isTaskOverdue, today), [records, wbTasks, workbenchCase]);
 
   function isBuiltInIssue(issueName) {
     const builtIn = appConfig.fields.find((f) => f.key === 'issue')?.options || [];
@@ -1163,33 +1057,8 @@ function App() {
 
   const timelineData = useMemo(() => {
     if (!selectedCaseName) return [];
-
     const caseRecords = displayRecords.filter(item => item.caseName === selectedCaseName);
-    const withDate = caseRecords.filter(item => item.date);
-    const withoutDate = caseRecords.filter(item => !item.date);
-
-    const grouped = {};
-    withDate.forEach(item => {
-      const key = item.date;
-      (grouped[key] ||= []).push(item);
-    });
-
-    const sortedDates = Object.keys(grouped).sort();
-    const result = sortedDates.map(date => ({
-      date,
-      items: grouped[date],
-      isNoDate: false,
-    }));
-
-    if (withoutDate.length > 0) {
-      result.push({
-        date: '未标注日期',
-        items: withoutDate,
-        isNoDate: true,
-      });
-    }
-
-    return result;
+    return buildTimelineGroups(caseRecords);
   }, [displayRecords, selectedCaseName]);
 
   const factNodeTimelineData = useMemo(() => {
@@ -6039,7 +5908,7 @@ function App() {
                         <div className="wp-sections-grid">
                           <h4 className="wp-sections-title"><Layers size={14} /> 选择要打包的内容</h4>
                           <div className="wp-section-options">
-                            {WORK_PACKAGE_EXPORT_SECTIONS.map((section) => {
+                            {WORK_PACKAGE_EXPORT_SECTIONS_WITH_ICONS.map((section) => {
                               const Icon = section.icon;
                               const checked = wpExportSections.has(section.key);
                               return (

@@ -9,3 +9,4 @@ export * from './taskBoard';
 export * from './workPackage';
 export * from './backup';
 export * from './template';
+export * from './domainLogic';
