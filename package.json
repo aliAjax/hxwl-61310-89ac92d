@@ -1,4 +1,7 @@
 {
+  "name": "hxwl-61310",
+  "version": "1.0.0",
+  "private": true,
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 61310",
     "build": "tsc -b && vite build",
